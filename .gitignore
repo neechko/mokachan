@@ -5,3 +5,9 @@ plan.txt
 test_token.js
 log.txt
 all fitur.txt
+envbackup.txt
+node_modules/
+*.db
+*.sqlite
+*.sqlite3
+nyomoxchan_history.db
