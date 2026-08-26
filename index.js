@@ -11,8 +11,28 @@ dotenv.config();
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const NOTIFY_CHANNEL_ID = process.env.CHANNEL_ID;
 
-const BOT_NAME = process.env.BOT_NAME || "Nyomoxchan";
+const BOT_NAME = process.env.BOT_NAME || "nyomoxchan";
 const PREFIX = process.env.COMMAND_PREFIX || "?";
+const COMMAND_CASE_INSENSITIVE =
+  process.env.COMMAND_CASE_INSENSITIVE === "true";
+function commandMatches(content, command) {
+  if (COMMAND_CASE_INSENSITIVE) {
+    const normalizedContent = content.toLowerCase();
+    const normalizedCommand = command.toLowerCase();
+
+    return (
+      normalizedContent === normalizedCommand ||
+      normalizedContent.startsWith(
+        `${normalizedCommand} `
+      )
+    );
+  }
+
+  return (
+    content === command ||
+    content.startsWith(`${command} `)
+  );
+}
 
 const HISTORY_COUNT = parseInt(process.env.HISTORY_COUNT, 10) || 5;
 const TRIM_CHARS = parseInt(process.env.TRIM_CHARS, 10) || 700;
@@ -467,10 +487,7 @@ client.on("messageCreate", async (msg) => {
   const lyricsCommand =
     `${PREFIX}${COMMANDS.lyrics}`;
 
-  if (
-    content === lyricsCommand ||
-    content.startsWith(`${lyricsCommand} `)
-  ) {
+  if (commandMatches(content, lyricsCommand)) {
     return handleLyricsCommand(msg, PREFIX, COMMANDS.lyrics, BOT_NAME);
   }
 
@@ -479,10 +496,7 @@ client.on("messageCreate", async (msg) => {
   const aiCommand =
     `${PREFIX}${COMMANDS.ai}`;
 
-  if (
-    content === aiCommand ||
-    content.startsWith(`${aiCommand} `)
-  ) {
+  if (commandMatches(content, aiCommand)) {
     const prompt = content
       .slice(aiCommand.length)
       .trim();
@@ -501,7 +515,7 @@ client.on("messageCreate", async (msg) => {
   const historyCommand =
     `${PREFIX}${COMMANDS.history}`;
 
-  if (content === historyCommand) {
+  if (commandMatches(content, historyCommand)) {
     const rows = await db.all(
       `
       SELECT prompt, response, created_at
@@ -525,7 +539,7 @@ client.on("messageCreate", async (msg) => {
       )
       .setColor(0xffaa00)
       .setFooter({
-        text: `${BOT_NAME} AI Bot`,
+        text: `${BOT_NAME}`,
       })
       .setTimestamp();
 
@@ -552,7 +566,7 @@ client.on("messageCreate", async (msg) => {
   const clearHistoryCommand =
     `${PREFIX}${COMMANDS.clearHistory}`;
 
-  if (content === clearHistoryCommand) {
+  if (commandMatches(content, clearHistoryCommand)) {
     await clearHistory(msg.author.id);
 
     return msg.reply(
@@ -565,7 +579,7 @@ client.on("messageCreate", async (msg) => {
   const statsCommand =
     `${PREFIX}${COMMANDS.stats}`;
 
-  if (content === statsCommand) {
+  if (commandMatches(content, statsCommand)) {
     const rows = await db.all(`
       SELECT
         model,
@@ -624,7 +638,7 @@ client.on("messageCreate", async (msg) => {
   const helpCommand =
     `${PREFIX}${COMMANDS.help}`;
 
-  if (content === helpCommand) {
+  if (commandMatches(content, helpCommand)) {
     const embed = new EmbedBuilder()
       .setTitle(
         `📖 ${BOT_NAME} Commands`
@@ -640,7 +654,7 @@ client.on("messageCreate", async (msg) => {
         `**${PREFIX}${COMMANDS.help}** - Tampilkan command`
       )
       .setFooter({
-        text: `${BOT_NAME} AI Bot`,
+        text: `${BOT_NAME}`,
       })
       .setTimestamp();
 
@@ -654,7 +668,7 @@ client.on("messageCreate", async (msg) => {
   const pingCommand =
     `${PREFIX}${COMMANDS.ping}`;
 
-  if (content === pingCommand) {
+  if (commandMatches(content, pingCommand)) {
     const latency =
       Date.now() - msg.createdTimestamp;
 

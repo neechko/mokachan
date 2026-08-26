@@ -49,18 +49,18 @@ export async function handleLyricsCommand(msg, PREFIX, command, botName = "Nyomo
 
   if (!query) return msg.reply(`❌ Tulis judul lagu setelah command ${fullCommand}`);
 
-  const thinkingMsg = await msg.reply("⏳ Mencari lirik di LRCLIB...");
+  const thinkingMsg = await msg.reply("⏳ Mencari lirik");
 
   try {
     const results = await searchLyrics(query);
 
     if (!results.length) {
-      return thinkingMsg.edit("❌ Lagu tidak ditemukan di LRCLIB.");
+      return thinkingMsg.edit("❌ Lagu tidak ditemukan");
     }
 
     const song = pickBestResult(results);
     if (!song) {
-      return thinkingMsg.edit("❌ Lagu tidak ditemukan di LRCLIB.");
+      return thinkingMsg.edit("❌ Lagu tidak ditemukan");
     }
 
     let lyrics = song.plainLyrics;
@@ -81,7 +81,7 @@ export async function handleLyricsCommand(msg, PREFIX, command, botName = "Nyomo
     const embed = new EmbedBuilder()
       .setTitle(`🎵 ${title}`)
       .setDescription(lyrics)
-      .setColor(0xff00ff)
+      .setColor(0xF48FB1)
       .setFooter({ text: `Lyrics powered by LRCLIB • ${botName}` })
       .setTimestamp();
 
