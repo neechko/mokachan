@@ -1,28 +1,26 @@
+// index.js
 import { Client, GatewayIntentBits, EmbedBuilder } from "discord.js";
 import axios from "axios";
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
 import dotenv from "dotenv";
-import "dotenv/config";
 import { handleLyricsCommand } from "./lyrics.js";
 
 dotenv.config();
 
-// ==================== ENV ====================
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const NOTIFY_CHANNEL_ID = process.env.CHANNEL_ID;
 const HISTORY_COUNT = parseInt(process.env.HISTORY_COUNT) || 5;
 const TRIM_CHARS = parseInt(process.env.TRIM_CHARS) || 700;
 const MAX_OUTPUT_CHARS = parseInt(process.env.MAX_OUTPUT_CHARS) || 1800;
-const PREFIX = process.env.PREFIX || "?"; // bisa ubah via env
+const PREFIX = process.env.PREFIX || "?"; 
+const BOT_NAME = "Nyomoxchan";
 
-// ==================== API CONFIG ====================
 const API_CONFIG = {
-  "yuka1": { name: "OpenRouter1", key: process.env.OPENROUTER_API_KEY_1 },
-  "yuka2": { name: "OpenRouter2", key: process.env.OPENROUTER_API_KEY_2 },
+  "nyomoxchan1": { name: "OpenRouter1", key: process.env.OPENROUTER_API_KEY_1 },
+  "nyomoxchan2": { name: "OpenRouter2", key: process.env.OPENROUTER_API_KEY_2 },
 };
 
-// ==================== FREE MODELS ====================
 let MODEL_PRIORITY = [
   "deepseek/deepseek-r1:free",
   "deepseek/deepseek-chat-v3-0324:free",
@@ -33,7 +31,6 @@ let MODEL_PRIORITY = [
 ];
 let LAST_PRIORITY = [...MODEL_PRIORITY];
 
-// ==================== CLIENT ====================
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 });
@@ -42,7 +39,7 @@ let db;
 
 // ==================== INIT DB ====================
 async function initDB() {
-  db = await open({ filename: "./yuka_history.db", driver: sqlite3.Database });
+  db = await open({ filename: "./nyomoxchan_history.db", driver: sqlite3.Database });
 
   await db.exec(`
     CREATE TABLE IF NOT EXISTS history (
@@ -50,16 +47,10 @@ async function initDB() {
       user_id TEXT,
       prompt TEXT,
       response TEXT,
-      created_at TEXT
+      created_at TEXT,
+      model TEXT
     )
   `);
-
-  const columns = await db.all("PRAGMA table_info(history)");
-  const columnNames = columns.map(c => c.name);
-  if (!columnNames.includes("model")) {
-    await db.exec("ALTER TABLE history ADD COLUMN model TEXT");
-    console.log("🟢 Kolom 'model' ditambahkan ke tabel history");
-  }
 
   await db.exec(`
     CREATE TABLE IF NOT EXISTS model_usage (
@@ -172,7 +163,7 @@ async function callAI(messages, apiKey, models = LAST_PRIORITY) {
 async function sendRequest(prompt, msg, apiData, customModels) {
   const extraHistory = await getRelevantHistory(msg.author.id, msg.reference?.messageId);
   const messages = [
-    { role: "system", content: "Kamu adalah Yuka, AI sopan, informatif, selalu menyebut dirimu Yuka." },
+    { role: "system", content: `Kamu adalah ${BOT_NAME}, AI sopan, informatif, selalu menyebut dirimu ${BOT_NAME}.` },
     ...extraHistory.flatMap(h => [
       { role: "user", content: h.prompt.slice(-TRIM_CHARS) },
       { role: "assistant", content: h.response.slice(-TRIM_CHARS) }
@@ -180,7 +171,7 @@ async function sendRequest(prompt, msg, apiData, customModels) {
     { role: "user", content: prompt }
   ];
 
-  const thinkingMsg = await msg.reply("⏳ Yuka sedang berpikir...");
+  const thinkingMsg = await msg.reply(`⏳ ${BOT_NAME} sedang berpikir...`);
 
   const modelsToUse = customModels || LAST_PRIORITY;
   const aiResponse = await callAI(messages, apiData.key, modelsToUse);
@@ -212,12 +203,12 @@ async function sendRequest(prompt, msg, apiData, customModels) {
 
 // ==================== EVENT HANDLER ====================
 client.once("ready", async () => {
-  console.log(`✅ Yuka siap! Logged in sebagai ${client.user.tag}`);
+  console.log(`✅ ${BOT_NAME} siap! Logged in sebagai ${client.user.tag}`);
   if (!NOTIFY_CHANNEL_ID) return console.warn("⚠️ CHANNEL_ID belum di-set di .env");
 
   try {
     const channel = await client.channels.fetch(NOTIFY_CHANNEL_ID);
-    if (channel) channel.send("✅ Halo guys! Yuka siap membantu 🚀");
+    if (channel) channel.send(`✅ Halo guys! ${BOT_NAME} siap membantu 🚀`);
   } catch (err) {
     console.error("❌ Gagal kirim notifikasi:", err.message);
   }
@@ -229,35 +220,36 @@ client.on("messageCreate", async msg => {
   if (msg.author.bot) return;
   const content = msg.content.trim();
 
-  // ========== Commands ==========
+  // ================= COMMANDS =================
 
-  // ?yuka1 / ?yuka2 => API spesifik, model acak
-  const cmdMatch = content.match(new RegExp(`^\\${PREFIX}(yuka\\d+)\\s*(.*)`));
+  // ✅ Lyrics (LRCLIB)
+  if (content.startsWith(`${PREFIX}lyrics`)) {
+    return handleLyricsCommand(msg, PREFIX);
+  }
+
+  // ✅ Nyomoxchan commands (spesifik API, contoh: ?nyomoxchan1, ?nyomoxchan2)
+  const cmdMatch = content.match(new RegExp(`^\\${PREFIX}(nyomoxchan\\d+)\\s*(.*)`));
   if (cmdMatch) {
     const cmd = cmdMatch[1];
     const prompt = cmdMatch[2];
     if (!prompt) return msg.reply("❌ Tulis pertanyaan setelah command.");
-
     const apiData = API_CONFIG[cmd];
     if (!apiData) return msg.reply("❌ API tidak tersedia untuk command ini.");
-
-    // acak model untuk masing-masing API
     const randomModel = [...MODEL_PRIORITY].sort(() => Math.random() - 0.5);
     return sendRequest(prompt, msg, apiData, randomModel);
   }
 
-  // ?yuka => semua model gratis acak, bebas API
-  if (content.startsWith(`${PREFIX}yuka`)) {
-    const prompt = content.slice(PREFIX.length + 4).trim();
-    if (!prompt) return msg.reply("❌ Tulis pertanyaan setelah ?yuka.");
-    // pilih API random dari yg tersedia
+  // ✅ ?nyomoxchan [pertanyaan] => semua model gratis acak, bebas API
+  if (content.startsWith(`${PREFIX}nyomoxchan`)) {
+    const prompt = content.slice(PREFIX.length + "nyomoxchan".length).trim();
+    if (!prompt) return msg.reply(`❌ Tulis pertanyaan setelah ${PREFIX}nyomoxchan.`);
     const apiKeys = Object.values(API_CONFIG);
     const randomApi = apiKeys[Math.floor(Math.random() * apiKeys.length)];
     const randomModels = [...MODEL_PRIORITY].sort(() => Math.random() - 0.5);
     return sendRequest(prompt, msg, randomApi, randomModels);
   }
 
-  // HISTORY
+  // ✅ History
   if (content === `${PREFIX}history`) {
     const rows = await db.all(
       "SELECT prompt, response, created_at FROM history WHERE user_id = ? ORDER BY id DESC LIMIT 5",
@@ -268,7 +260,7 @@ client.on("messageCreate", async msg => {
     const historyEmbed = new EmbedBuilder()
       .setTitle("🕒 History Chatmu (terakhir 5)")
       .setColor(0xffaa00)
-      .setFooter({ text: "Yuka AI Bot" })
+      .setFooter({ text: `${BOT_NAME} AI Bot` })
       .setTimestamp();
 
     let desc = "";
@@ -279,13 +271,13 @@ client.on("messageCreate", async msg => {
     return msg.reply({ embeds: [historyEmbed] });
   }
 
-  // CLEAR HISTORY
+  // ✅ Clear history
   if (content === `${PREFIX}clearhistory`) {
     await clearHistory(msg.author.id);
     return msg.reply("🗑️ Semua history chatmu berhasil dihapus!");
   }
 
-  // STATS
+  // ✅ Stats
   if (content === `${PREFIX}stats`) {
     const rows = await db.all(`
       SELECT model,
@@ -300,11 +292,11 @@ client.on("messageCreate", async msg => {
     if (!rows.length) return msg.reply("📊 Belum ada data penggunaan model.");
 
     function makeBar(rate) {
-      const filled = Math.round(rate / 5); // 20 segmen
+      const filled = Math.round(rate / 5);
       return "█".repeat(filled) + "░".repeat(20 - filled);
     }
 
-    let desc = rows.map(r => 
+    let desc = rows.map(r =>
       `✅ **${r.model}**\n[${makeBar(r.rate)}] ${r.rate}% (${r.sukses}/${r.total})`
     ).join("\n\n");
 
@@ -312,32 +304,33 @@ client.on("messageCreate", async msg => {
       .setTitle("📊 Statistik Model (Visual)")
       .setColor(0x33cc33)
       .setDescription(desc)
-      .setFooter({ text: "Yuka AI - Adaptive Mode" })
+      .setFooter({ text: `${BOT_NAME} AI - Adaptive Mode` })
       .setTimestamp();
 
     return msg.reply({ embeds: [statsEmbed] });
   }
 
-  // HELP
+  // ✅ Help
   if (content === `${PREFIX}help`) {
     const helpEmbed = new EmbedBuilder()
-      .setTitle("📖 Yuka Commands")
+      .setTitle(`📖 ${BOT_NAME} Commands`)
       .setColor(0x00ffff)
       .setDescription(
-        `**?yuka1 / ?yuka2 [pertanyaan]** - Tanya Yuka sesuai API\n` +
-        `**?yuka [pertanyaan]** - Tanya Yuka semua model acak\n` +
+        `**${PREFIX}nyomoxchan1 / ${PREFIX}nyomoxchan2 [pertanyaan]** - Tanya ${BOT_NAME} sesuai API\n` +
+        `**${PREFIX}nyomoxchan [pertanyaan]** - Tanya ${BOT_NAME} semua model acak\n` +
+        `**${PREFIX}lyrics [judul lagu]** - Cari lirik lagu (LRCLIB API)\n` +
         `**${PREFIX}history** - Lihat chat terakhir\n` +
         `**${PREFIX}clearhistory** - Hapus semua history chatmu\n` +
         `**${PREFIX}stats** - Lihat statistik model 24 jam terakhir\n` +
         `**${PREFIX}ping** - Cek latency bot\n` +
         `**${PREFIX}help** - Tampilkan command ini`
       )
-      .setFooter({ text: "Yuka AI Bot" })
+      .setFooter({ text: `${BOT_NAME} AI Bot` })
       .setTimestamp();
     return msg.reply({ embeds: [helpEmbed] });
   }
 
-  // PING
+  // ✅ Ping
   if (content === `${PREFIX}ping`) {
     const latency = Date.now() - msg.createdTimestamp;
     const pingEmbed = new EmbedBuilder()

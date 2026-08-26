@@ -1,6 +1,4 @@
-// index.js
 import { Client, GatewayIntentBits, EmbedBuilder } from "discord.js";
-import axios from "axios";
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
 import dotenv from "dotenv";
@@ -8,37 +6,72 @@ import { handleLyricsCommand } from "./lyrics.js";
 
 dotenv.config();
 
+// ==================== CONFIG ====================
+
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const NOTIFY_CHANNEL_ID = process.env.CHANNEL_ID;
-const HISTORY_COUNT = parseInt(process.env.HISTORY_COUNT) || 5;
-const TRIM_CHARS = parseInt(process.env.TRIM_CHARS) || 700;
-const MAX_OUTPUT_CHARS = parseInt(process.env.MAX_OUTPUT_CHARS) || 1800;
-const PREFIX = process.env.PREFIX || "?"; // bisa ubah via env
 
-const API_CONFIG = {
-  "yuka1": { name: "OpenRouter1", key: process.env.OPENROUTER_API_KEY_1 },
-  "yuka2": { name: "OpenRouter2", key: process.env.OPENROUTER_API_KEY_2 },
+const BOT_NAME = process.env.BOT_NAME || "Nyomoxchan";
+const PREFIX = process.env.COMMAND_PREFIX || "?";
+
+const HISTORY_COUNT = parseInt(process.env.HISTORY_COUNT, 10) || 5;
+const TRIM_CHARS = parseInt(process.env.TRIM_CHARS, 10) || 700;
+const MAX_OUTPUT_CHARS =
+  parseInt(process.env.MAX_OUTPUT_CHARS, 10) || 1800;
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL =
+  process.env.GEMINI_MODEL || "gemini-3.7-flash";
+
+const GEMINI_MAX_RETRIES =
+  parseInt(process.env.GEMINI_MAX_RETRIES, 10) || 4;
+
+const GEMINI_RETRY_DELAY =
+  parseInt(process.env.GEMINI_RETRY_DELAY, 10) || 2000;
+
+// ==================== COMMANDS ====================
+
+const COMMANDS = {
+  ai: process.env.CMD_NYOMOXCHAN || "nyomoxchan",
+  lyrics: process.env.CMD_LYRICS || "lyrics",
+  history: process.env.CMD_HISTORY || "history",
+  clearHistory: process.env.CMD_CLEARHISTORY || "clearhistory",
+  stats: process.env.CMD_STATS || "stats",
+  ping: process.env.CMD_PING || "ping",
+  help: process.env.CMD_HELP || "help",
 };
 
-let MODEL_PRIORITY = [
-  "deepseek/deepseek-r1:free",
-  "deepseek/deepseek-chat-v3-0324:free",
-  "meta-llama/llama-4-maverick:free",
-  "meta-llama/llama-4-scout:free",
-  "qwen/qwen3-235b-a22b:free",
-  "openai/gpt-oss-20b:free"
-];
-let LAST_PRIORITY = [...MODEL_PRIORITY];
+// ==================== VALIDATION ====================
+
+if (!DISCORD_TOKEN) {
+  console.error("❌ DISCORD_TOKEN belum diatur.");
+  process.exit(1);
+}
+
+if (!GEMINI_API_KEY) {
+  console.error("❌ GEMINI_API_KEY belum diatur.");
+  process.exit(1);
+}
+
+// ==================== DISCORD ====================
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
 });
 
 let db;
 
-// ==================== INIT DB ====================
+// ==================== DATABASE ====================
+
 async function initDB() {
-  db = await open({ filename: "./yuka_history.db", driver: sqlite3.Database });
+  db = await open({
+    filename: "./nyomoxchan_history.db",
+    driver: sqlite3.Database,
+  });
 
   await db.exec(`
     CREATE TABLE IF NOT EXISTS history (
@@ -62,286 +95,594 @@ async function initDB() {
 }
 
 // ==================== HISTORY ====================
+
 async function getRelevantHistory(userId, replyMsgId) {
-  let extraHistory = [];
+  const extraHistory = [];
+
   if (replyMsgId) {
     try {
       const repliedMsg = await client.channels.cache
         .get(NOTIFY_CHANNEL_ID)
         ?.messages.fetch(replyMsgId);
 
-      if (repliedMsg && repliedMsg.author.id === client.user.id) {
+      if (
+        repliedMsg &&
+        repliedMsg.author.id === client.user.id
+      ) {
         const row = await db.get(
-          "SELECT prompt, response, model FROM history WHERE response = ? LIMIT 1",
+          `
+          SELECT prompt, response, model
+          FROM history
+          WHERE response = ?
+          LIMIT 1
+          `,
           repliedMsg.content
         );
-        if (row) extraHistory.push({ prompt: row.prompt, response: row.response, model: row.model });
+
+        if (row) {
+          extraHistory.push(row);
+        }
       }
-    } catch {}
+    } catch (error) {
+      console.error(
+        "⚠️ Gagal mengambil reply history:",
+        error.message
+      );
+    }
   }
 
   const historyRows = await db.all(
-    "SELECT prompt, response, model FROM history WHERE user_id = ? ORDER BY id DESC LIMIT ?",
-    userId, HISTORY_COUNT
+    `
+    SELECT prompt, response, model
+    FROM history
+    WHERE user_id = ?
+    ORDER BY id DESC
+    LIMIT ?
+    `,
+    userId,
+    HISTORY_COUNT
   );
 
-  return [...historyRows.reverse(), ...extraHistory];
+  return [
+    ...historyRows.reverse(),
+    ...extraHistory,
+  ];
 }
 
 async function clearHistory(userId) {
-  await db.run("DELETE FROM history WHERE user_id = ?", userId);
+  await db.run(
+    "DELETE FROM history WHERE user_id = ?",
+    userId
+  );
 }
 
-// ==================== ADAPTIVE MODEL ====================
-async function getAdaptiveModels() {
-  const stats = await db.all(`
-    SELECT model, SUM(success) as ok, COUNT(*) as total 
-    FROM model_usage 
-    GROUP BY model
-  `);
-  
-  return [...MODEL_PRIORITY].sort((a, b) => {
-    const statA = stats.find(s => s.model === a);
-    const statB = stats.find(s => s.model === b);
-    const rateA = statA ? statA.ok / statA.total : 1;
-    const rateB = statB ? statB.ok / statB.total : 1;
-    return rateB - rateA;
-  });
-}
+// ==================== GEMINI ====================
 
-async function refreshModelPriority() {
-  const newOrder = await getAdaptiveModels();
-  if (JSON.stringify(newOrder) !== JSON.stringify(LAST_PRIORITY)) {
-    LAST_PRIORITY = newOrder;
-    console.log("🔄 Prioritas model diperbarui:", newOrder);
+async function callGemini(messages) {
+  let delay = GEMINI_RETRY_DELAY;
 
+  const systemMessage = messages.find(
+    (message) => message.role === "system"
+  );
+
+  const contents = messages
+    .filter((message) => message.role !== "system")
+    .map((message) => ({
+      role: message.role === "assistant" ? "model" : "user",
+      parts: [
+        {
+          text: message.content,
+        },
+      ],
+    }));
+
+  for (
+    let attempt = 1;
+    attempt <= GEMINI_MAX_RETRIES;
+    attempt++
+  ) {
     try {
-      const channel = await client.channels.fetch(NOTIFY_CHANNEL_ID);
-      if (channel) {
-        const prettyList = newOrder.map((m, i) => `${i+1}️⃣ ${m}`).join("\n");
-        channel.send(`🔄 **Prioritas model diperbarui:**\n${prettyList}`);
-      }
-    } catch (err) {
-      console.error("❌ Gagal kirim notifikasi perubahan prioritas:", err.message);
-    }
-  }
-}
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+          GEMINI_MODEL
+        )}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY,
+          },
+          body: JSON.stringify({
+            system_instruction: systemMessage
+              ? {
+                  parts: [
+                    {
+                      text: systemMessage.content,
+                    },
+                  ],
+                }
+              : undefined,
 
-// ==================== AI CALL ====================
-async function callAI(messages, apiKey, models = LAST_PRIORITY) {
-  for (const model of models) {
-    let delay = 2000;
-    for (let attempt = 1; attempt <= 4; attempt++) {
-      try {
-        const response = await axios.post(
-          "https://openrouter.ai/api/v1/chat/completions",
-          { model, messages },
-          { headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, timeout: 30000 }
+            contents,
+
+            generationConfig: {
+              temperature: 0.8,
+              maxOutputTokens: 2048,
+            },
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response
+          .json()
+          .catch(() => ({}));
+
+        const status = response.status;
+
+        console.error(
+          `❌ Gemini HTTP ${status}:`,
+          errorData
         );
 
-        const result = response.data.choices?.[0]?.message?.content || "⚠️ Tidak ada jawaban.";
-        await db.run("INSERT INTO model_usage (model, success, used_at) VALUES (?, 1, ?)", model, new Date().toISOString());
-        return { result, model };
-      } catch (err) {
-        if (err.response?.status === 429) {
-          console.log(`⏳ ${model} limit. Retry ${attempt}/4 dalam ${delay / 1000}s...`);
-          await new Promise(r => setTimeout(r, delay));
+        if (status === 429 && attempt < GEMINI_MAX_RETRIES) {
+          console.log(
+            `⏳ Rate limit. Percobaan ${attempt}/${GEMINI_MAX_RETRIES}. ` +
+            `Menunggu ${delay}ms...`
+          );
+
+          await new Promise((resolve) =>
+            setTimeout(resolve, delay)
+          );
+
           delay *= 2;
-        } else {
-          console.error(`❌ Error model ${model}:`, err.response?.data || err.message);
-          await db.run("INSERT INTO model_usage (model, success, used_at) VALUES (?, 0, ?)", model, new Date().toISOString());
-          break;
+          continue;
         }
+
+        await db.run(
+          `
+          INSERT INTO model_usage
+          (model, success, used_at)
+          VALUES (?, 0, ?)
+          `,
+          GEMINI_MODEL,
+          new Date().toISOString()
+        );
+
+        return null;
+      }
+
+      const data = await response.json();
+
+      const result =
+        data?.candidates?.[0]?.content?.parts
+          ?.map((part) => part.text || "")
+          .join("")
+          .trim() || "";
+
+      if (!result) {
+        console.error(
+          "❌ Gemini tidak mengembalikan teks:",
+          JSON.stringify(data)
+        );
+
+        await db.run(
+          `
+          INSERT INTO model_usage
+          (model, success, used_at)
+          VALUES (?, 0, ?)
+          `,
+          GEMINI_MODEL,
+          new Date().toISOString()
+        );
+
+        return null;
+      }
+
+      await db.run(
+        `
+        INSERT INTO model_usage
+        (model, success, used_at)
+        VALUES (?, 1, ?)
+        `,
+        GEMINI_MODEL,
+        new Date().toISOString()
+      );
+
+      return {
+        result,
+        model: GEMINI_MODEL,
+      };
+    } catch (error) {
+      console.error(
+        "❌ Gemini request error:",
+        error.message
+      );
+
+      if (attempt < GEMINI_MAX_RETRIES) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, delay)
+        );
+
+        delay *= 2;
       }
     }
   }
+
   return null;
 }
 
-// ==================== SEND REQUEST ====================
-async function sendRequest(prompt, msg, apiData, customModels) {
-  const extraHistory = await getRelevantHistory(msg.author.id, msg.reference?.messageId);
+// ==================== AI REQUEST ====================
+
+async function sendRequest(prompt, msg) {
+  const history = await getRelevantHistory(
+    msg.author.id,
+    msg.reference?.messageId
+  );
+
   const messages = [
-    { role: "system", content: "Kamu adalah Yuka, AI sopan, informatif, selalu menyebut dirimu Yuka." },
-    ...extraHistory.flatMap(h => [
-      { role: "user", content: h.prompt.slice(-TRIM_CHARS) },
-      { role: "assistant", content: h.response.slice(-TRIM_CHARS) }
+    {
+      role: "system",
+      content: `
+Kamu adalah ${BOT_NAME}.
+
+Nama kamu adalah ${BOT_NAME}.
+Kamu adalah AI Discord yang ramah, sopan,
+informatif, santai, dan natural.
+
+Gunakan bahasa Indonesia jika pengguna
+berbicara menggunakan bahasa Indonesia.
+
+Jawab dengan jelas dan jangan terlalu
+panjang kecuali pengguna meminta penjelasan detail.
+      `.trim(),
+    },
+
+    ...history.flatMap((item) => [
+      {
+        role: "user",
+        content: item.prompt.slice(-TRIM_CHARS),
+      },
+      {
+        role: "assistant",
+        content: item.response.slice(-TRIM_CHARS),
+      },
     ]),
-    { role: "user", content: prompt }
+
+    {
+      role: "user",
+      content: prompt,
+    },
   ];
 
-  const thinkingMsg = await msg.reply("⏳ Yuka sedang berpikir...");
+  const thinkingMessage = await msg.reply(
+    `⏳ ${BOT_NAME} sedang berpikir...`
+  );
 
-  const modelsToUse = customModels || LAST_PRIORITY;
-  const aiResponse = await callAI(messages, apiData.key, modelsToUse);
+  const aiResponse = await callGemini(messages);
 
   if (!aiResponse) {
-    return thinkingMsg.edit("❌ Semua model gratis sedang penuh. Coba lagi nanti.");
+    return thinkingMessage.edit(
+      `❌ ${BOT_NAME} gagal mendapatkan jawaban dari Gemini.`
+    );
   }
 
   const { result, model } = aiResponse;
-  const finalText = `✅ **Model dipakai:** ${model}\n\n${result}`;
+
+  const finalText =
+    `🤖 **${BOT_NAME}**\n` +
+    `> Model: \`${model}\`\n\n` +
+    result;
 
   const chunks = [];
-  for (let i = 0; i < finalText.length; i += MAX_OUTPUT_CHARS) {
-    chunks.push(finalText.slice(i, i + MAX_OUTPUT_CHARS));
+
+  for (
+    let i = 0;
+    i < finalText.length;
+    i += MAX_OUTPUT_CHARS
+  ) {
+    chunks.push(
+      finalText.slice(
+        i,
+        i + MAX_OUTPUT_CHARS
+      )
+    );
   }
 
-  await thinkingMsg.edit(chunks[0]);
-  for (let j = 1; j < chunks.length; j++) {
-    await msg.channel.send(chunks[j]);
+  await thinkingMessage.edit(chunks[0]);
+
+  for (let i = 1; i < chunks.length; i++) {
+    await msg.channel.send(chunks[i]);
   }
 
   if (result.length <= 10000) {
     await db.run(
-      "INSERT INTO history (user_id, prompt, response, created_at, model) VALUES (?, ?, ?, ?, ?)",
-      msg.author.id, prompt, result, new Date().toISOString(), model
+      `
+      INSERT INTO history
+      (user_id, prompt, response, created_at, model)
+      VALUES (?, ?, ?, ?, ?)
+      `,
+      msg.author.id,
+      prompt,
+      result,
+      new Date().toISOString(),
+      model
     );
   }
 }
 
-// ==================== EVENT HANDLER ====================
+// ==================== READY ====================
+
 client.once("ready", async () => {
-  console.log(`✅ Yuka siap! Logged in sebagai ${client.user.tag}`);
-  if (!NOTIFY_CHANNEL_ID) return console.warn("⚠️ CHANNEL_ID belum di-set di .env");
+  console.log(
+    `✅ ${BOT_NAME} siap! Logged in sebagai ${client.user.tag}`
+  );
+
+  console.log(
+    `🤖 Gemini: ${GEMINI_MODEL}`
+  );
+
+  console.log(
+    `⌨️ Prefix: ${PREFIX}`
+  );
+
+  console.log(
+    `💬 AI command: ${PREFIX}${COMMANDS.ai}`
+  );
+
+  if (!NOTIFY_CHANNEL_ID) {
+    console.warn(
+      "⚠️ CHANNEL_ID belum di-set."
+    );
+    return;
+  }
 
   try {
-    const channel = await client.channels.fetch(NOTIFY_CHANNEL_ID);
-    if (channel) channel.send("✅ Halo guys! Yuka siap membantu 🚀");
-  } catch (err) {
-    console.error("❌ Gagal kirim notifikasi:", err.message);
-  }
+    const channel = await client.channels.fetch(
+      NOTIFY_CHANNEL_ID
+    );
 
-  setInterval(refreshModelPriority, 10 * 60 * 1000);
+    if (channel) {
+      await channel.send(
+        `✅ Halo guys! ${BOT_NAME} siap membantu 🚀`
+      );
+    }
+  } catch (error) {
+    console.error(
+      "❌ Gagal mengirim notifikasi:",
+      error.message
+    );
+  }
 });
 
-client.on("messageCreate", async msg => {
+// ==================== MESSAGE HANDLER ====================
+
+client.on("messageCreate", async (msg) => {
   if (msg.author.bot) return;
+
   const content = msg.content.trim();
 
-  // ================= COMMANDS =================
+  // ==================== LYRICS ====================
 
-  // ✅ Genius lyrics
-  if (content.startsWith(`${PREFIX}lyrics`)) {
-    return handleLyricsCommand(msg, PREFIX);
+  const lyricsCommand =
+    `${PREFIX}${COMMANDS.lyrics}`;
+
+  if (
+    content === lyricsCommand ||
+    content.startsWith(`${lyricsCommand} `)
+  ) {
+    return handleLyricsCommand(msg, PREFIX, COMMANDS.lyrics, BOT_NAME);
   }
 
-  // ✅ Yuka commands
-  const cmdMatch = content.match(new RegExp(`^\\${PREFIX}(yuka\\d+)\\s*(.*)`));
-  if (cmdMatch) {
-    const cmd = cmdMatch[1];
-    const prompt = cmdMatch[2];
-    if (!prompt) return msg.reply("❌ Tulis pertanyaan setelah command.");
-    const apiData = API_CONFIG[cmd];
-    if (!apiData) return msg.reply("❌ API tidak tersedia untuk command ini.");
-    const randomModel = [...MODEL_PRIORITY].sort(() => Math.random() - 0.5);
-    return sendRequest(prompt, msg, apiData, randomModel);
+  // ==================== AI ====================
+
+  const aiCommand =
+    `${PREFIX}${COMMANDS.ai}`;
+
+  if (
+    content === aiCommand ||
+    content.startsWith(`${aiCommand} `)
+  ) {
+    const prompt = content
+      .slice(aiCommand.length)
+      .trim();
+
+    if (!prompt) {
+      return msg.reply(
+        `❌ Tulis pertanyaan setelah ${aiCommand}.`
+      );
+    }
+
+    return sendRequest(prompt, msg);
   }
 
-  if (content.startsWith(`${PREFIX}yuka`)) {
-    const prompt = content.slice(PREFIX.length + 4).trim();
-    if (!prompt) return msg.reply("❌ Tulis pertanyaan setelah ?yuka.");
-    const apiKeys = Object.values(API_CONFIG);
-    const randomApi = apiKeys[Math.floor(Math.random() * apiKeys.length)];
-    const randomModels = [...MODEL_PRIORITY].sort(() => Math.random() - 0.5);
-    return sendRequest(prompt, msg, randomApi, randomModels);
-  }
+  // ==================== HISTORY ====================
 
-  // ✅ History
-  if (content === `${PREFIX}history`) {
+  const historyCommand =
+    `${PREFIX}${COMMANDS.history}`;
+
+  if (content === historyCommand) {
     const rows = await db.all(
-      "SELECT prompt, response, created_at FROM history WHERE user_id = ? ORDER BY id DESC LIMIT 5",
+      `
+      SELECT prompt, response, created_at
+      FROM history
+      WHERE user_id = ?
+      ORDER BY id DESC
+      LIMIT 5
+      `,
       msg.author.id
     );
-    if (!rows.length) return msg.reply("Tidak ada history.");
 
-    const historyEmbed = new EmbedBuilder()
-      .setTitle("🕒 History Chatmu (terakhir 5)")
+    if (!rows.length) {
+      return msg.reply(
+        "Tidak ada history."
+      );
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(
+        "🕒 History Chatmu (terakhir 5)"
+      )
       .setColor(0xffaa00)
-      .setFooter({ text: "Yuka AI Bot" })
+      .setFooter({
+        text: `${BOT_NAME} AI Bot`,
+      })
       .setTimestamp();
 
-    let desc = "";
-    for (const r of rows) {
-      desc += `**Q:** ${r.prompt}\n**A:** ${r.response}\n*${r.created_at}*\n\n`;
+    let description = "";
+
+    for (const row of rows) {
+      description +=
+        `**Q:** ${row.prompt}\n` +
+        `**A:** ${row.response}\n` +
+        `*${row.created_at}*\n\n`;
     }
-    historyEmbed.setDescription(desc.slice(0, 4096));
-    return msg.reply({ embeds: [historyEmbed] });
+
+    embed.setDescription(
+      description.slice(0, 4096)
+    );
+
+    return msg.reply({
+      embeds: [embed],
+    });
   }
 
-  // ✅ Clear history
-  if (content === `${PREFIX}clearhistory`) {
+  // ==================== CLEAR HISTORY ====================
+
+  const clearHistoryCommand =
+    `${PREFIX}${COMMANDS.clearHistory}`;
+
+  if (content === clearHistoryCommand) {
     await clearHistory(msg.author.id);
-    return msg.reply("🗑️ Semua history chatmu berhasil dihapus!");
+
+    return msg.reply(
+      "🗑️ Semua history chatmu berhasil dihapus!"
+    );
   }
 
-  // ✅ Stats
-  if (content === `${PREFIX}stats`) {
+  // ==================== STATS ====================
+
+  const statsCommand =
+    `${PREFIX}${COMMANDS.stats}`;
+
+  if (content === statsCommand) {
     const rows = await db.all(`
-      SELECT model,
-             SUM(success) as sukses,
-             COUNT(*) as total,
-             ROUND((SUM(success) * 100.0) / COUNT(*), 2) as rate
+      SELECT
+        model,
+        SUM(success) AS sukses,
+        COUNT(*) AS total,
+        ROUND(
+          (SUM(success) * 100.0) / COUNT(*),
+          2
+        ) AS rate
       FROM model_usage
       GROUP BY model
       ORDER BY rate DESC
     `);
 
-    if (!rows.length) return msg.reply("📊 Belum ada data penggunaan model.");
+    if (!rows.length) {
+      return msg.reply(
+        "📊 Belum ada data penggunaan Gemini."
+      );
+    }
 
     function makeBar(rate) {
       const filled = Math.round(rate / 5);
-      return "█".repeat(filled) + "░".repeat(20 - filled);
+
+      return (
+        "█".repeat(filled) +
+        "░".repeat(20 - filled)
+      );
     }
 
-    let desc = rows.map(r =>
-      `✅ **${r.model}**\n[${makeBar(r.rate)}] ${r.rate}% (${r.sukses}/${r.total})`
-    ).join("\n\n");
+    const description = rows
+      .map(
+        (row) =>
+          `🤖 **${row.model}**\n` +
+          `[${makeBar(row.rate)}] ` +
+          `${row.rate}% ` +
+          `(${row.sukses}/${row.total})`
+      )
+      .join("\n\n");
 
-    const statsEmbed = new EmbedBuilder()
-      .setTitle("📊 Statistik Model (Visual)")
+    const embed = new EmbedBuilder()
+      .setTitle("📊 Statistik Gemini")
       .setColor(0x33cc33)
-      .setDescription(desc)
-      .setFooter({ text: "Yuka AI - Adaptive Mode" })
+      .setDescription(description)
+      .setFooter({
+        text: `${BOT_NAME} AI`,
+      })
       .setTimestamp();
 
-    return msg.reply({ embeds: [statsEmbed] });
+    return msg.reply({
+      embeds: [embed],
+    });
   }
 
-  // ✅ Help
-  if (content === `${PREFIX}help`) {
-    const helpEmbed = new EmbedBuilder()
-      .setTitle("📖 Yuka Commands")
+  // ==================== HELP ====================
+
+  const helpCommand =
+    `${PREFIX}${COMMANDS.help}`;
+
+  if (content === helpCommand) {
+    const embed = new EmbedBuilder()
+      .setTitle(
+        `📖 ${BOT_NAME} Commands`
+      )
       .setColor(0x00ffff)
       .setDescription(
-        `**?yuka1 / ?yuka2 [pertanyaan]** - Tanya Yuka sesuai API\n` +
-        `**?yuka [pertanyaan]** - Tanya Yuka semua model acak\n` +
-        `**${PREFIX}lyrics [judul lagu]** - Cari lirik lagu (Genius API)\n` +
-        `**${PREFIX}history** - Lihat chat terakhir\n` +
-        `**${PREFIX}clearhistory** - Hapus semua history chatmu\n` +
-        `**${PREFIX}stats** - Lihat statistik model 24 jam terakhir\n` +
-        `**${PREFIX}ping** - Cek latency bot\n` +
-        `**${PREFIX}help** - Tampilkan command ini`
+        `**${PREFIX}${COMMANDS.ai} [pertanyaan]** - Tanya ${BOT_NAME} menggunakan Gemini\n` +
+        `**${PREFIX}${COMMANDS.lyrics} [judul lagu]** - Cari lirik lagu\n` +
+        `**${PREFIX}${COMMANDS.history}** - Lihat chat terakhir\n` +
+        `**${PREFIX}${COMMANDS.clearHistory}** - Hapus semua history\n` +
+        `**${PREFIX}${COMMANDS.stats}** - Statistik penggunaan Gemini\n` +
+        `**${PREFIX}${COMMANDS.ping}** - Cek latency\n` +
+        `**${PREFIX}${COMMANDS.help}** - Tampilkan command`
       )
-      .setFooter({ text: "Yuka AI Bot" })
+      .setFooter({
+        text: `${BOT_NAME} AI Bot`,
+      })
       .setTimestamp();
-    return msg.reply({ embeds: [helpEmbed] });
+
+    return msg.reply({
+      embeds: [embed],
+    });
   }
 
-  // ✅ Ping
-  if (content === `${PREFIX}ping`) {
-    const latency = Date.now() - msg.createdTimestamp;
-    const pingEmbed = new EmbedBuilder()
+  // ==================== PING ====================
+
+  const pingCommand =
+    `${PREFIX}${COMMANDS.ping}`;
+
+  if (content === pingCommand) {
+    const latency =
+      Date.now() - msg.createdTimestamp;
+
+    const embed = new EmbedBuilder()
       .setTitle("🏓 Pong!")
       .setColor(0x00ff00)
-      .setDescription(`Latency: ${latency}ms`);
-    return msg.reply({ embeds: [pingEmbed] });
+      .setDescription(
+        `Latency: ${latency}ms`
+      );
+
+    return msg.reply({
+      embeds: [embed],
+    });
   }
 });
 
-// ==================== INIT ====================
-(async () => {
-  await initDB();
-  await client.login(DISCORD_TOKEN);
-})();
+// ==================== START ====================
 
+(async () => {
+  try {
+    await initDB();
+    await client.login(DISCORD_TOKEN);
+  } catch (error) {
+    console.error(
+      "❌ Gagal menjalankan bot:",
+      error
+    );
+
+    process.exit(1);
+  }
+})();
