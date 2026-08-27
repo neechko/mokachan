@@ -24,6 +24,7 @@ src/
 1. Letakkan file `lyrics.js` kamu yang lama di root folder (sejajar dengan `index.js`).
    File itu tidak saya ubah/sertakan karena isi aslinya tidak ada di percakapan ini.
 2. Update `.env` kamu (lihat `.env.example`):
+   - `GEMINI_MODELS="model1,model2,model3,dan seterusnya"`
    - `BOT_NAME=mokachan`
    - `COMMAND_PREFIX=m`
    - `COMMAND_CASE_INSENSITIVE=true`

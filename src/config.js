@@ -22,11 +22,41 @@ export const MAX_OUTPUT_CHARS =
 // ==================== GEMINI ====================
 
 export const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-export const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.7-flash";
+
+// Daftar model, dipisah koma, dicoba BERURUTAN dari kiri ke kanan.
+// Kalau model pertama kena limit/gagal, otomatis lanjut ke model berikutnya.
+// Contoh .env: GEMINI_MODELS=gemini-3.5-flash,gemini-3.5-flash-lite
+// GEMINI_MODEL (tunggal, nama lama) tetap didukung untuk kompatibilitas.
+export const GEMINI_MODELS = (
+  process.env.GEMINI_MODELS ||
+  process.env.GEMINI_MODEL ||
+  "gemini-3.5-flash,gemini-3.5-flash-lite"
+)
+  .split(",")
+  .map((model) => model.trim())
+  .filter(Boolean);
+
+// Retry PER MODEL, hanya untuk error sementara (network error / 5xx).
+// 429 tidak pernah di-retry di model yang sama (lihat gemini.js).
 export const GEMINI_MAX_RETRIES =
-  parseInt(process.env.GEMINI_MAX_RETRIES, 10) || 4;
+  parseInt(process.env.GEMINI_MAX_RETRIES, 10) || 3;
+
 export const GEMINI_RETRY_DELAY =
   parseInt(process.env.GEMINI_RETRY_DELAY, 10) || 2000;
+
+// Batas KERAS jumlah request Gemini yang benar-benar terkirim untuk
+// SATU pemanggilan callGemini(), dihitung lintas SEMUA model + retry.
+// Ini rem tangan utama: berapa pun banyaknya GEMINI_MODELS (mis. 10),
+// jumlah request ke API tetap dibatasi angka ini per pesan user.
+export const GEMINI_MAX_TOTAL_ATTEMPTS =
+  parseInt(process.env.GEMINI_MAX_TOTAL_ATTEMPTS, 10) || 6;
+
+// Setelah sebuah model kena 429, model itu "diistirahatkan" selama
+// sekian ms dan tidak akan dicoba lagi (bahkan dari pesan user lain
+// yang berbeda) sampai cooldown ini habis. Mencegah bot terus-menerus
+// menghajar model yang sudah jelas lagi kena limit.
+export const GEMINI_MODEL_COOLDOWN_MS =
+  parseInt(process.env.GEMINI_MODEL_COOLDOWN_MS, 10) || 60000;
 
 // ==================== COMMANDS ====================
 

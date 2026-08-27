@@ -5,7 +5,7 @@ import {
   BOT_NAME,
   PREFIX,
   COMMANDS,
-  GEMINI_MODEL,
+  GEMINI_MODELS,
   validateConfig,
 } from "./src/config.js";
 import { commandMatches } from "./src/commandMatcher.js";
@@ -34,7 +34,7 @@ const client = new Client({
 
 client.once("ready", async () => {
   console.log(`✅ ${BOT_NAME} siap! Logged in sebagai ${client.user.tag}`);
-  console.log(`🤖 Gemini: ${GEMINI_MODEL}`);
+  console.log(`🤖 Gemini (urutan fallback): ${GEMINI_MODELS.join(" -> ")}`);
   console.log(`⌨️ Prefix: ${PREFIX}`);
   console.log(`💬 AI command: ${PREFIX}${COMMANDS.ai}`);
 
