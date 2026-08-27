@@ -1,12 +1,13 @@
 # mokachan
 
-```---install guide on hosting--
+```install guide on hosting
 Put github file on file manager server 
 cd folder 
 pwd
 rm -rf node_modules package-lock.json
 npm install
-node index.js```
+node index.js
+```
 
 ## Struktur folder
 
