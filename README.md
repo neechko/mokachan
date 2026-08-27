@@ -1,4 +1,12 @@
-# mokachan (restrukturisasi)
+# mokachan
+
+```---install guide on hosting--
+Put github file on file manager server 
+cd folder 
+pwd
+rm -rf node_modules package-lock.json
+npm install
+node index.js```
 
 ## Struktur folder
 
@@ -21,9 +29,7 @@ src/
 
 ## PENTING sebelum menjalankan
 
-1. Letakkan file `lyrics.js` kamu yang lama di root folder (sejajar dengan `index.js`).
-   File itu tidak saya ubah/sertakan karena isi aslinya tidak ada di percakapan ini.
-2. Update `.env` kamu (lihat `.env.example`):
+1. Update `.env` kamu (lihat `.env.example`):
    - `GEMINI_MODELS="model1,model2,model3,dan seterusnya"`
    - `BOT_NAME=mokachan`
    - `COMMAND_PREFIX=m`
@@ -34,11 +40,3 @@ src/
    rename file `nyomoxchan_history.db` -> `mokachan_history.db` sebelum start,
    atau ubah nama file di `src/database.js` sesuai keinginan.
 4. Jalankan seperti biasa: `node index.js`
-
-## Bug yang sudah diperbaiki
-
-- `aiCommand is not defined` (ReferenceError yang bikin bot crash tiap ada
-  pesan masuk) — sekarang dideklarasikan sebelum dipakai di router.
-- Command `lyrics` dulu case-sensitive sendiri (beda dari command lain).
-  Sekarang semua command lewat `commandMatches()` yang sama, jadi
-  prefix `m` / `M` konsisten di seluruh fitur.
