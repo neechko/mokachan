@@ -30,8 +30,79 @@ export async function initDB() {
     )
   `);
 
+  // ---- companion memory: ringkasan + fakta, menggantikan history mentah ----
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS companion_memory (
+      user_id TEXT PRIMARY KEY,
+      nickname TEXT DEFAULT '',
+      affection INTEGER DEFAULT 0,
+      summary TEXT DEFAULT '',
+      facts TEXT DEFAULT '[]',
+      last_prompt TEXT DEFAULT '',
+      last_response TEXT DEFAULT '',
+      turns_since_summary INTEGER DEFAULT 0,
+      updated_at TEXT
+    )
+  `);
+
+  // ---- spawn karakter aktif per channel ----
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS channel_spawn (
+      channel_id TEXT PRIMARY KEY,
+      last_spawn_at TEXT,
+      anilist_id INTEGER,
+      name TEXT,
+      series TEXT,
+      image_url TEXT,
+      rarity TEXT,
+      spawned_at TEXT
+    )
+  `);
+
+  // ---- koleksi karakter yang sudah diklaim user ----
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS character_claims (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT,
+      anilist_id INTEGER,
+      name TEXT,
+      series TEXT,
+      image_url TEXT,
+      rarity TEXT,
+      claimed_at TEXT
+    )
+  `);
+
+  // ---- pengaturan bot (misal: channel khusus spawn karakter) ----
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS bot_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    )
+  `);
+
   return db;
 }
+
+// ==================== SETTINGS (key-value sederhana) ====================
+
+export async function getSetting(key) {
+  const row = await db.get(`SELECT value FROM bot_settings WHERE key = ?`, key);
+  return row?.value ?? null;
+}
+
+export async function setSetting(key, value) {
+  await db.run(
+    `
+    INSERT INTO bot_settings (key, value)
+    VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `,
+    key,
+    value
+  );
+}
+
 
 // ==================== HISTORY (untuk fitur AI) ====================
 
@@ -112,6 +183,197 @@ export async function getRecentHistory(userId, limit = 5) {
 
 export async function clearHistory(userId) {
   await db.run("DELETE FROM history WHERE user_id = ?", userId);
+}
+
+// ==================== COMPANION MEMORY ====================
+// Sumber konteks utama untuk `mokachan` sekarang. Menggantikan
+// getRelevantHistory() yang lama (5 pasang Q&A mentah tiap request).
+
+const DEFAULT_COMPANION = {
+  nickname: "",
+  affection: 0,
+  summary: "",
+  facts: "[]",
+  last_prompt: "",
+  last_response: "",
+  turns_since_summary: 0,
+};
+
+export async function getOrCreateCompanion(userId) {
+  const row = await db.get(
+    `SELECT * FROM companion_memory WHERE user_id = ?`,
+    userId
+  );
+
+  if (row) return row;
+
+  await db.run(
+    `
+    INSERT INTO companion_memory
+    (user_id, nickname, affection, summary, facts, last_prompt, last_response, turns_since_summary, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    userId,
+    DEFAULT_COMPANION.nickname,
+    DEFAULT_COMPANION.affection,
+    DEFAULT_COMPANION.summary,
+    DEFAULT_COMPANION.facts,
+    DEFAULT_COMPANION.last_prompt,
+    DEFAULT_COMPANION.last_response,
+    DEFAULT_COMPANION.turns_since_summary,
+    new Date().toISOString()
+  );
+
+  return { user_id: userId, ...DEFAULT_COMPANION };
+}
+
+export async function saveCompanion(userId, patch) {
+  const current = await getOrCreateCompanion(userId);
+  const merged = { ...current, ...patch };
+
+  await db.run(
+    `
+    UPDATE companion_memory SET
+      nickname = ?,
+      affection = ?,
+      summary = ?,
+      facts = ?,
+      last_prompt = ?,
+      last_response = ?,
+      turns_since_summary = ?,
+      updated_at = ?
+    WHERE user_id = ?
+    `,
+    merged.nickname,
+    merged.affection,
+    merged.summary,
+    merged.facts,
+    merged.last_prompt,
+    merged.last_response,
+    merged.turns_since_summary,
+    new Date().toISOString(),
+    userId
+  );
+}
+
+export async function resetCompanion(userId) {
+  await db.run(`DELETE FROM companion_memory WHERE user_id = ?`, userId);
+}
+
+// ==================== SPAWN KARAKTER (channel) ====================
+
+export async function getActiveSpawn(channelId) {
+  return db.get(
+    `SELECT * FROM channel_spawn WHERE channel_id = ?`,
+    channelId
+  );
+}
+
+export async function setSpawn(channelId, character) {
+  const now = new Date().toISOString();
+
+  await db.run(
+    `
+    INSERT INTO channel_spawn
+      (channel_id, last_spawn_at, anilist_id, name, series, image_url, rarity, spawned_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(channel_id) DO UPDATE SET
+      last_spawn_at = excluded.last_spawn_at,
+      anilist_id = excluded.anilist_id,
+      name = excluded.name,
+      series = excluded.series,
+      image_url = excluded.image_url,
+      rarity = excluded.rarity,
+      spawned_at = excluded.spawned_at
+    `,
+    channelId,
+    now,
+    character.anilistId,
+    character.name,
+    character.series,
+    character.image,
+    character.rarity,
+    now
+  );
+}
+
+// Menandai channel baru saja "dicek" tanpa spawn baru (dipakai untuk
+// inisialisasi timer 20 menit pertama kali channel itu ramai chat).
+export async function touchSpawnTimer(channelId) {
+  await db.run(
+    `
+    INSERT INTO channel_spawn (channel_id, last_spawn_at)
+    VALUES (?, ?)
+    ON CONFLICT(channel_id) DO NOTHING
+    `,
+    channelId,
+    new Date().toISOString()
+  );
+}
+
+// Hapus spawn aktif (setelah diklaim atau expired karena timeout).
+export async function clearSpawn(channelId) {
+  await db.run(
+    `
+    UPDATE channel_spawn
+    SET anilist_id = NULL, name = NULL, series = NULL,
+        image_url = NULL, rarity = NULL
+    WHERE channel_id = ?
+    `,
+    channelId
+  );
+}
+
+export async function claimActiveCharacter(channelId, userId) {
+  const spawn = await getActiveSpawn(channelId);
+
+  if (!spawn || !spawn.anilist_id) {
+    return null; // tidak ada spawn aktif
+  }
+
+  // Hapus dulu SEBELUM insert klaim supaya kalau 2 orang ngetik nyaris
+  // bersamaan, hanya yang pertama yang berhasil (karena UPDATE ini
+  // membuat spawn berikutnya sudah NULL saat proses kedua jalan).
+  await clearSpawn(channelId);
+
+  await db.run(
+    `
+    INSERT INTO character_claims
+    (user_id, anilist_id, name, series, image_url, rarity, claimed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    `,
+    userId,
+    spawn.anilist_id,
+    spawn.name,
+    spawn.series,
+    spawn.image_url,
+    spawn.rarity,
+    new Date().toISOString()
+  );
+
+  return spawn;
+}
+
+export async function getUserCollection(userId, limit = 10) {
+  return db.all(
+    `
+    SELECT name, series, rarity, claimed_at
+    FROM character_claims
+    WHERE user_id = ?
+    ORDER BY id DESC
+    LIMIT ?
+    `,
+    userId,
+    limit
+  );
+}
+
+export async function getUserCollectionCount(userId) {
+  const row = await db.get(
+    `SELECT COUNT(*) AS total FROM character_claims WHERE user_id = ?`,
+    userId
+  );
+  return row?.total || 0;
 }
 
 // ==================== MODEL USAGE (untuk fitur stats) ====================

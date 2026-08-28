@@ -10,7 +10,7 @@ export async function handleHistoryCommand(msg) {
   }
 
   const embed = new EmbedBuilder()
-    .setTitle("🕒 History Chatmu (terakhir 5)")
+    .setTitle("History chat dengan moka")
     .setColor(0xffaa00)
     .setFooter({ text: `${BOT_NAME}` })
     .setTimestamp();

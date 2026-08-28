@@ -58,6 +58,40 @@ export const GEMINI_MAX_TOTAL_ATTEMPTS =
 export const GEMINI_MODEL_COOLDOWN_MS =
   parseInt(process.env.GEMINI_MODEL_COOLDOWN_MS, 10) || 60000;
 
+// ==================== COMPANION MEMORY (rolling summary) ====================
+// Menggantikan cara lama "kirim ulang N history mentah tiap request".
+// Sekarang cuma kirim: system persona + ringkasan singkat + fakta penting
+// + SATU turn terakhir (untuk kelancaran alur) + prompt baru.
+// Ringkasan di-update sendiri oleh AI setiap SUMMARY_EVERY_N_TURNS giliran,
+// jadi biaya token hampir konstan walau chat sudah ratusan kali.
+
+export const SUMMARY_EVERY_N_TURNS =
+  parseInt(process.env.SUMMARY_EVERY_N_TURNS, 10) || 6;
+
+export const MAX_FACTS = parseInt(process.env.MAX_FACTS, 10) || 8;
+
+export const AFFECTION_PER_TURN =
+  parseInt(process.env.AFFECTION_PER_TURN, 10) || 1;
+
+// ==================== CLAIM KARAKTER ANIME (spawn ala Rimi-chan) ====================
+// Setiap channel aktif chat, karakter random dari AniList akan muncul
+// otomatis setiap CHARACTER_SPAWN_INTERVAL_MS (default 20 menit), dan
+// SIAPAPUN yang paling cepat ketik command claim akan mendapatkannya.
+// Kalau tidak ada yang klaim dalam CHARACTER_SPAWN_TIMEOUT_MS, spawn
+// hangus dan channel tsb bisa spawn baru lagi setelah interval berikutnya.
+
+export const CHARACTER_SPAWN_INTERVAL_MS =
+  parseInt(process.env.CHARACTER_SPAWN_INTERVAL_MS, 10) || 20 * 60 * 1000;
+
+export const CHARACTER_SPAWN_TIMEOUT_MS =
+  parseInt(process.env.CHARACTER_SPAWN_TIMEOUT_MS, 10) || 10 * 60 * 1000;
+
+// Channel default tempat karakter muncul (opsional, bisa diisi di .env).
+// Kalau kosong, admin WAJIB set lewat command `msetspawnchannel` dulu
+// sebelum spawn otomatis aktif -- supaya tidak nyebar ke semua channel.
+export const DEFAULT_SPAWN_CHANNEL_ID =
+  process.env.CHARACTER_SPAWN_CHANNEL_ID || null;
+
 // ==================== COMMANDS ====================
 
 export const COMMANDS = {
@@ -68,18 +102,23 @@ export const COMMANDS = {
   stats: process.env.CMD_STATS || "stats",
   ping: process.env.CMD_PING || "ping",
   help: process.env.CMD_HELP || "help",
+  claim: process.env.CMD_CLAIM || "claim",
+  koleksi: process.env.CMD_KOLEKSI || "koleksi",
+  profil: process.env.CMD_PROFIL || "profil",
+  resetcompanion: process.env.CMD_RESETCOMPANION || "resetcompanion",
+  setSpawnChannel: process.env.CMD_SETSPAWNCHANNEL || "setspawnchannel",
 };
 
 // ==================== VALIDATION ====================
 
 export function validateConfig() {
   if (!DISCORD_TOKEN) {
-    console.error("❌ DISCORD_TOKEN belum diatur.");
+    console.error("DISCORD_TOKEN belum diatur.");
     process.exit(1);
   }
 
   if (!GEMINI_API_KEY) {
-    console.error("❌ GEMINI_API_KEY belum diatur.");
+    console.error("GEMINI_API_KEY belum diatur.");
     process.exit(1);
   }
 }

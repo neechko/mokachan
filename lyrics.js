@@ -47,20 +47,20 @@ export async function handleLyricsCommand(msg, PREFIX, command, botName = "Nyomo
   const fullCommand = `${PREFIX}${command}`;
   const query = content.slice(fullCommand.length).trim();
 
-  if (!query) return msg.reply(`❌ Tulis judul lagu setelah command ${fullCommand}`);
+  if (!query) return msg.reply(`Tulis judul lagu setelah command ${fullCommand}`);
 
-  const thinkingMsg = await msg.reply("⏳ Mencari lirik");
+  const thinkingMsg = await msg.reply("Mencari lirik");
 
   try {
     const results = await searchLyrics(query);
 
     if (!results.length) {
-      return thinkingMsg.edit("❌ Lagu tidak ditemukan");
+      return thinkingMsg.edit("Lagu tidak ditemukan");
     }
 
     const song = pickBestResult(results);
     if (!song) {
-      return thinkingMsg.edit("❌ Lagu tidak ditemukan");
+      return thinkingMsg.edit("Lagu tidak ditemukan");
     }
 
     let lyrics = song.plainLyrics;
@@ -69,8 +69,8 @@ export async function handleLyricsCommand(msg, PREFIX, command, botName = "Nyomo
     }
     if (!lyrics) {
       lyrics = song.instrumental
-        ? "🎼 Lagu ini instrumental, tidak ada lirik."
-        : "❌ Lirik tidak tersedia untuk lagu ini.";
+        ? "Lagu ini instrumental, tidak ada lirik."
+        : "Lirik tidak tersedia untuk lagu ini.";
     }
 
     if (lyrics.length > 4000) lyrics = lyrics.slice(0, 4000) + "\n…(truncated)";
@@ -79,7 +79,7 @@ export async function handleLyricsCommand(msg, PREFIX, command, botName = "Nyomo
     const title = titleParts.length ? titleParts.join(" - ") : query;
 
     const embed = new EmbedBuilder()
-      .setTitle(`🎵 ${title}`)
+      .setTitle(`${title}`)
       .setDescription(lyrics)
       .setColor(0xF48FB1)
       .setFooter({ text: `Lyrics powered by LRCLIB • ${botName}` })
@@ -94,7 +94,7 @@ export async function handleLyricsCommand(msg, PREFIX, command, botName = "Nyomo
 
     return thinkingMsg.edit({ content: null, embeds: [embed] });
   } catch (err) {
-    console.error("❌ Error fetch LRCLIB:", err.response?.status, err.message);
-    return thinkingMsg.edit(`❌ Error fetch LRCLIB: ${err.response?.status || err.message}`);
+    console.error("Error fetch LRCLIB:", err.response?.status, err.message);
+    return thinkingMsg.edit(`Error fetch LRCLIB: ${err.response?.status || err.message}`);
   }
 }

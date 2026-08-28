@@ -1,57 +1,37 @@
-import { BOT_NAME, TRIM_CHARS, MAX_OUTPUT_CHARS, NOTIFY_CHANNEL_ID } from "../config.js";
-import { getRelevantHistory, saveHistory } from "../database.js";
+import { BOT_NAME, MAX_OUTPUT_CHARS } from "../config.js";
+import { saveHistory } from "../database.js";
 import { callGemini } from "../gemini.js";
+import {
+  buildCompanionMessages,
+  updateCompanionAfterReply,
+} from "../companion.js";
 
 export async function handleAiCommand(client, msg, prompt) {
-  const history = await getRelevantHistory(
-    client,
-    NOTIFY_CHANNEL_ID,
+  // Konteks sekarang datang dari companion memory (ringkasan + fakta +
+  // 1 turn terakhir), BUKAN 5 pasang Q&A mentah seperti sebelumnya.
+  // Ini yang membuat payload ke Gemini jauh lebih hemat token walau
+  // riwayat chat sudah sangat panjang.
+  const { messages, state } = await buildCompanionMessages(
     msg.author.id,
-    msg.reference?.messageId
+    prompt
   );
 
-  const messages = [
-    {
-      role: "system",
-      content: `
-Kamu adalah ${BOT_NAME}.
-
-Nama kamu adalah ${BOT_NAME}.
-Kamu adalah AI Discord yang ramah, sopan,
-informatif, santai, dan natural.
-
-Gunakan bahasa Indonesia jika pengguna
-berbicara menggunakan bahasa Indonesia.
-
-Jawab dengan jelas dan jangan terlalu
-panjang kecuali pengguna meminta penjelasan detail.
-      `.trim(),
-    },
-
-    ...history.flatMap((item) => [
-      { role: "user", content: item.prompt.slice(-TRIM_CHARS) },
-      { role: "assistant", content: item.response.slice(-TRIM_CHARS) },
-    ]),
-
-    { role: "user", content: prompt },
-  ];
-
   const thinkingMessage = await msg.reply(
-    `⏳ ${BOT_NAME} sedang berpikir...`
+    `${BOT_NAME} sedang berpikir...`
   );
 
   const aiResponse = await callGemini(messages);
 
   if (!aiResponse) {
     return thinkingMessage.edit(
-      `❌ ${BOT_NAME} gagal mendapatkan jawaban dari Gemini.`
+      `${BOT_NAME} gagal mendapatkan jawaban dari Gemini.`
     );
   }
 
   const { result, model } = aiResponse;
 
   const finalText =
-    `🤖 **${BOT_NAME}**\n` +
+    `**${BOT_NAME}**\n` +
     `> Model: \`${model}\`\n\n` +
     result;
 
@@ -67,5 +47,11 @@ panjang kecuali pengguna meminta penjelasan detail.
     await msg.channel.send(chunks[i]);
   }
 
+  // history.js / clearhistory.js tetap jalan seperti biasa (log mentah
+  // untuk ditinjau manual via `mhistory`), TAPI ini bukan lagi sumber
+  // konteks untuk AI -- itu tugas companion memory di atas.
   await saveHistory(msg.author.id, prompt, result, model);
+
+  // Update ringkasan, fakta, dan poin kedekatan companion.
+  await updateCompanionAfterReply(msg.author.id, state, prompt, result);
 }

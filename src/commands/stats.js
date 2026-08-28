@@ -11,13 +11,13 @@ export async function handleStatsCommand(msg) {
   const rows = await getModelStats();
 
   if (!rows.length) {
-    return msg.reply("📊 Belum ada data penggunaan Gemini.");
+    return msg.reply("Belum ada data penggunaan Gemini.");
   }
 
   const description = rows
     .map(
       (row) =>
-        `🤖 **${row.model}**\n` +
+        `**${row.model}**\n` +
         `[${makeBar(row.rate)}] ` +
         `${row.rate}% ` +
         `(${row.sukses}/${row.total})`
@@ -25,7 +25,7 @@ export async function handleStatsCommand(msg) {
     .join("\n\n");
 
   const embed = new EmbedBuilder()
-    .setTitle("📊 Statistik Gemini")
+    .setTitle("Statistik Gemini")
     .setColor(0x33cc33)
     .setDescription(description)
     .setFooter({ text: `${BOT_NAME} AI` })

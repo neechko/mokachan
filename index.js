@@ -17,6 +17,12 @@ import { handleStatsCommand } from "./src/commands/stats.js";
 import { handleHelpCommand } from "./src/commands/help.js";
 import { handlePingCommand } from "./src/commands/ping.js";
 import { handleLyricsCommand } from "./lyrics.js";
+import { handleClaimCommand } from "./src/commands/claim.js";
+import { handleKoleksiCommand } from "./src/commands/koleksi.js";
+import { handleProfilCommand } from "./src/commands/profil.js";
+import { handleResetCompanionCommand } from "./src/commands/resetCompanion.js";
+import { handleSetSpawnChannelCommand } from "./src/commands/setSpawnChannel.js";
+import { maybeSpawnCharacter } from "./src/characterSpawn.js";
 
 validateConfig();
 
@@ -33,10 +39,10 @@ const client = new Client({
 // ==================== READY ====================
 
 client.once("ready", async () => {
-  console.log(`✅ ${BOT_NAME} siap! Logged in sebagai ${client.user.tag}`);
-  console.log(`🤖 Gemini (urutan fallback): ${GEMINI_MODELS.join(" -> ")}`);
-  console.log(`⌨️ Prefix: ${PREFIX}`);
-  console.log(`💬 AI command: ${PREFIX}${COMMANDS.ai}`);
+  console.log(`${BOT_NAME} siap! Logged in sebagai ${client.user.tag}`);
+  console.log(`Gemini (urutan fallback): ${GEMINI_MODELS.join(" -> ")}`);
+  console.log(`Prefix: ${PREFIX}`);
+  console.log(`AI command: ${PREFIX}${COMMANDS.ai}`);
 
   if (!NOTIFY_CHANNEL_ID) {
     console.warn("⚠️ CHANNEL_ID belum di-set.");
@@ -47,10 +53,10 @@ client.once("ready", async () => {
     const channel = await client.channels.fetch(NOTIFY_CHANNEL_ID);
 
     if (channel) {
-      await channel.send(`✅ Halo guys! ${BOT_NAME} siap membantu 🚀`);
+      await channel.send(`Halo guys! ${BOT_NAME} siap membantu 🚀`);
     }
   } catch (error) {
-    console.error("❌ Gagal mengirim notifikasi:", error.message);
+    console.error("Gagal mengirim notifikasi:", error.message);
   }
 });
 
@@ -62,6 +68,13 @@ client.on("messageCreate", async (msg) => {
   if (msg.author.bot) return;
 
   const content = msg.content.trim();
+
+  // ---- spawn karakter otomatis (jalan di SEMUA pesan, bukan cuma command) ----
+  // Ini yang bikin karakter random muncul sendiri tiap ~20 menit selama
+  // channel-nya aktif chat, mirip mekanisme bot "Rimi-chan".
+  maybeSpawnCharacter(msg).catch((error) =>
+    console.error("maybeSpawnCharacter error:", error.message)
+  );
 
   // ---- lyrics ----
   const lyricsCommand = `${PREFIX}${COMMANDS.lyrics}`;
@@ -75,7 +88,7 @@ client.on("messageCreate", async (msg) => {
     const prompt = content.slice(aiCommand.length).trim();
 
     if (!prompt) {
-      return msg.reply(`❌ Tulis pertanyaan setelah ${aiCommand}.`);
+      return msg.reply(`Tulis pertanyaan setelah ${aiCommand}.`);
     }
 
     return handleAiCommand(client, msg, prompt);
@@ -110,6 +123,36 @@ client.on("messageCreate", async (msg) => {
   if (commandMatches(content, pingCommand)) {
     return handlePingCommand(msg);
   }
+
+  // ---- profil (companion) ----
+  const profilCommand = `${PREFIX}${COMMANDS.profil}`;
+  if (commandMatches(content, profilCommand)) {
+    return handleProfilCommand(msg);
+  }
+
+  // ---- resetcompanion ----
+  const resetCompanionCommand = `${PREFIX}${COMMANDS.resetcompanion}`;
+  if (commandMatches(content, resetCompanionCommand)) {
+    return handleResetCompanionCommand(msg);
+  }
+
+  // ---- claim karakter ----
+  const claimCommand = `${PREFIX}${COMMANDS.claim}`;
+  if (commandMatches(content, claimCommand)) {
+    return handleClaimCommand(msg);
+  }
+
+  // ---- koleksi karakter ----
+  const koleksiCommand = `${PREFIX}${COMMANDS.koleksi}`;
+  if (commandMatches(content, koleksiCommand)) {
+    return handleKoleksiCommand(msg);
+  }
+
+  // ---- setspawnchannel (admin) ----
+  const setSpawnChannelCommand = `${PREFIX}${COMMANDS.setSpawnChannel}`;
+  if (commandMatches(content, setSpawnChannelCommand)) {
+    return handleSetSpawnChannelCommand(msg);
+  }
 });
 
 // ==================== START ====================
@@ -119,7 +162,7 @@ client.on("messageCreate", async (msg) => {
     await initDB();
     await client.login(DISCORD_TOKEN);
   } catch (error) {
-    console.error("❌ Gagal menjalankan bot:", error);
+    console.error("Gagal menjalankan bot:", error);
     process.exit(1);
   }
 })();
