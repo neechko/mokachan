@@ -16,6 +16,7 @@ Bot Discord dengan AI companion berbasis Gemini dan sistem claim karakter anime 
 - [Fitur](#fitur)
   - [Companion AI (Hemat Token)](#companion-ai-hemat-token)
   - [Claim Karakter Anime](#claim-karakter-anime)
+  - [Lirik Lagu (LRCLIB)](#lirik-lagu-lrclib)
 - [Struktur Folder](#struktur-folder)
 - [Instalasi](#instalasi)
 - [Konfigurasi](#konfigurasi)
@@ -45,6 +46,11 @@ Versi sebelumnya mengirim ulang lima pasang tanya-jawab mentah ke Gemini pada se
 - Jika tidak ada yang mengklaim dalam `CHARACTER_SPAWN_TIMEOUT_MS` (default 10 menit), spawn tersebut hangus dan channel dapat menerima spawn baru.
 - Rarity dihitung otomatis berdasarkan jumlah favorit karakter di AniList (Common / Rare / Epic / Legendary).
 - Gunakan `mkoleksi` untuk melihat karakter yang sudah dimiliki.
+
+### Lirik Lagu (LRCLIB)
+
+- Perintah `mlyrics <judul lagu> <artis>` mengambil lirik lagu dari LRCLIB (API publik, tanpa API key) dan menampilkannya langsung di Discord.
+- Fitur ini ditangani oleh `lyrics.js` pada root project (berkas lama, tidak diubah pada update ini).
 
 ## Struktur Folder
 
@@ -142,7 +148,13 @@ Tabel berikut mengasumsikan `COMMAND_PREFIX=m` (dapat berbeda sesuai konfigurasi
 | `mresetcompanion` | Mengatur ulang memori companion |
 | `mclaim` | Mengklaim karakter yang sedang spawn |
 | `mkoleksi` | Melihat karakter yang sudah dimiliki |
+| `mlyrics <judul lagu> <artis>` | Menampilkan lirik lagu dari LRCLIB |
 
 ## Catatan Jaringan
 
-Fitur claim karakter memanggil `https://graphql.anilist.co` (API publik, tanpa API key). Pastikan server hosting memiliki akses internet keluar (outbound) ke domain tersebut.
+Bot ini memanggil dua API publik yang tidak memerlukan API key. Pastikan server hosting memiliki akses internet keluar (outbound) ke kedua domain berikut:
+
+| Fitur | Endpoint |
+|---|---|
+| Claim karakter anime | `https://graphql.anilist.co` |
+| Lirik lagu | `https://lrclib.net` |
