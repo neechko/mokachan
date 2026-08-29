@@ -73,6 +73,19 @@ export const MAX_FACTS = parseInt(process.env.MAX_FACTS, 10) || 8;
 export const AFFECTION_PER_TURN =
   parseInt(process.env.AFFECTION_PER_TURN, 10) || 1;
 
+// ==================== BELAJAR PASIF (Moka mengenal tiap member) ====================
+// Moka diam-diam "mendengarkan" chat biasa (BUKAN command) di semua
+// channel yang bisa diaksesnya, lalu tiap PASSIVE_LEARN_BATCH_SIZE pesan
+// terkumpul dari 1 user, di-rangkum 1x jadi update summary/fakta di
+// companion_memory yang sama -- jadi profilnya nyambung sama yang
+// dipakai command `mokachan`. Ini TIDAK memicu balasan apapun, cuma
+// belajar di belakang layar.
+export const PASSIVE_LEARN_BATCH_SIZE =
+  parseInt(process.env.PASSIVE_LEARN_BATCH_SIZE, 10) || 12;
+
+export const PASSIVE_LEARN_MIN_LENGTH =
+  parseInt(process.env.PASSIVE_LEARN_MIN_LENGTH, 10) || 4;
+
 // ==================== CLAIM KARAKTER ANIME (spawn ala Rimi-chan) ====================
 // Setiap channel aktif chat, karakter random dari AniList akan muncul
 // otomatis setiap CHARACTER_SPAWN_INTERVAL_MS (default 20 menit), dan

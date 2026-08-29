@@ -21,7 +21,14 @@ import {
   MAX_FACTS,
   AFFECTION_PER_TURN,
 } from "./config.js";
-import { getOrCreateCompanion, saveCompanion, resetCompanion } from "./database.js";
+import {
+  getOrCreateCompanion,
+  saveCompanion,
+  resetCompanion,
+  getCompanionPublicInfo,
+  listKnownCompanionUserIds,
+  clearPassiveBuffer,
+} from "./database.js";
 import { callGemini } from "./gemini.js";
 
 function affectionLabel(points) {
@@ -40,10 +47,115 @@ function safeParseFacts(raw) {
   }
 }
 
+// Ambil ringkasan + fakta milik member LAIN yang di-mention di pesan,
+// supaya AI bisa "nyambung" ngobrolin/komentar soal mereka juga -- ini
+// yang bikin bot kerasa tau siapa-siapa-aja di server, bukan cuma inget
+// user yang lagi ngobrol doang. Sengaja cuma pakai ringkasan & fakta
+// (bukan transkrip chat mentah member itu) supaya tetap hemat token dan
+// tidak membocorkan isi obrolan pribadi verbatim.
+async function buildMentionedMembersContext(mentionedUsers) {
+  if (!mentionedUsers.length) return "";
+
+  const infos = await Promise.all(
+    mentionedUsers.map((user) => getCompanionPublicInfo(user.id))
+  );
+
+  const blocks = infos
+    .map((info, idx) => {
+      if (!info) return null;
+
+      const facts = safeParseFacts(info.facts);
+      const displayName = mentionedUsers[idx].username;
+      const lines = [];
+
+      if (info.summary) lines.push(`- Tentang dia: ${info.summary}`);
+      if (facts.length) {
+        lines.push(...facts.map((f) => `- ${f}`));
+      }
+
+      if (!lines.length) return null;
+
+      return `${displayName}${info.nickname ? ` (biasa dipanggil "${info.nickname}")` : ""}:\n${lines.join("\n")}`;
+    })
+    .filter(Boolean);
+
+  if (!blocks.length) return "";
+
+  return `
+
+Member lain yang disebut/di-mention di pesan ini, ini yang kamu ingat soal mereka (boleh dipakai buat nyambungin obrolan, tapi jangan asal bocorin detail sensitif):
+${blocks.join("\n\n")}`;
+}
+
+// Escape karakter spesial regex biar nama yang mengandung titik/tanda
+// baca aneh tidak bikin regex-nya error atau salah match.
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Deteksi member yang disebut lewat NAMA BIASA di kalimat (tanpa
+// @mention), misal "gimana kabarnya Budi hari ini". Cuma dicek terhadap
+// user yang SUDAH PERNAH chat sama bot (ada di companion_memory) --
+// selain lebih murah (tidak perlu scan semua member server), member yang
+// belum pernah chat memang belum punya apa-apa yang bisa diceritakan.
+//
+// Dicocokkan ke username Discord ATAU nickname di server itu (kalau
+// pesannya datang dari guild), pakai word-boundary case-insensitive.
+// Nama yang cuma 1-2 huruf sengaja dilewati supaya tidak salah kena
+// kata umum (misal nama "Al" ke-trigger gara-gara kata lain).
+export async function findNameMentionedUsers(msg, promptText, excludeIds = new Set()) {
+  if (!promptText) return [];
+
+  const knownIds = await listKnownCompanionUserIds(msg.author.id);
+  const candidates = knownIds.filter((id) => !excludeIds.has(id));
+
+  if (!candidates.length) return [];
+
+  const found = [];
+
+  for (const id of candidates) {
+    try {
+      let username = null;
+      let nickname = null;
+      let user = null;
+
+      if (msg.guild) {
+        const member = await msg.guild.members.fetch(id).catch(() => null);
+        if (!member) continue; // sudah keluar server / gagal fetch, skip
+        username = member.user.username;
+        nickname = member.nickname;
+        user = member.user;
+      } else {
+        user = await msg.client.users.fetch(id).catch(() => null);
+        if (!user) continue;
+        username = user.username;
+      }
+
+      const namesToCheck = [username, nickname].filter(
+        (name) => name && name.length >= 3
+      );
+
+      const isMentioned = namesToCheck.some((name) => {
+        const re = new RegExp(`\\b${escapeRegex(name)}\\b`, "i");
+        return re.test(promptText);
+      });
+
+      if (isMentioned) found.push(user);
+    } catch {
+      // gagal fetch salah satu kandidat, lanjut ke kandidat berikutnya
+    }
+  }
+
+  return found;
+}
+
 // Bangun array `messages` siap kirim ke callGemini().
-export async function buildCompanionMessages(userId, prompt) {
+export async function buildCompanionMessages(userId, prompt, mentionedUsers = []) {
   const state = await getOrCreateCompanion(userId);
   const facts = safeParseFacts(state.facts);
+  const mentionedContext = await buildMentionedMembersContext(
+    mentionedUsers.filter((u) => u.id !== userId)
+  );
 
   const systemContent = `
 Kamu adalah ${BOT_NAME}.
@@ -70,6 +182,7 @@ ${state.summary ? state.summary : "(belum ada, ini termasuk interaksi awal kalia
 
 Hal-hal yang kamu ingat tentang user ini:
 ${facts.length ? facts.map((f) => `- ${f}`).join("\n") : "(belum ada catatan khusus)"}
+${mentionedContext}
   `.trim();
 
   const messages = [{ role: "system", content: systemContent }];
@@ -200,6 +313,25 @@ export async function getCompanionProfile(userId) {
   };
 }
 
+// Versi read-only untuk lihat profil member LAIN (mprofil @user).
+// Return null kalau member itu belum pernah chat sama mokachan sama
+// sekali -- supaya tidak bikin baris companion_memory kosong cuma
+// gara-gara di-cek doang.
+export async function getCompanionPublicProfile(userId) {
+  const info = await getCompanionPublicInfo(userId);
+  if (!info) return null;
+
+  return {
+    ...info,
+    facts: safeParseFacts(info.facts),
+    label: affectionLabel(info.affection),
+  };
+}
+
 export async function resetCompanionMemory(userId) {
   await resetCompanion(userId);
+  // Bersihin juga buffer chat biasa yang belum sempat diproses, biar
+  // reset ini benar-benar bersih total (tidak ada sisa yang nanti
+  // "menghidupkan lagi" summary lama begitu buffer kepenuhan lagi).
+  await clearPassiveBuffer(userId);
 }

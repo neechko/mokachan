@@ -1,10 +1,18 @@
 // ==================== SPAWN KARAKTER OTOMATIS ====================
-// Mirip mekanisme "Rimi-chan": selama channel ada yang chat, setiap
-// CHARACTER_SPAWN_INTERVAL_MS (default 20 menit) sejak spawn/klaim
-// terakhir, karakter random dari AniList otomatis muncul di channel
-// itu. Siapapun yang paling cepat ketik command claim akan mendapatkannya.
-// Kalau tidak ada yang klaim dalam CHARACTER_SPAWN_TIMEOUT_MS, spawn
-// hangus dan channel bisa dapat spawn baru lagi.
+// Mirip mekanisme "Rimi-chan": selama SERVER ada yang chat (di channel
+// MANAPUN), setiap CHARACTER_SPAWN_INTERVAL_MS (default 20 menit) sejak
+// spawn/klaim terakhir, karakter random dari AniList otomatis muncul di
+// CHANNEL RESMI yang sudah di-set admin (msetspawnchannel). Siapapun yang
+// paling cepat ketik command claim akan mendapatkannya. Kalau tidak ada
+// yang klaim dalam CHARACTER_SPAWN_TIMEOUT_MS, spawn hangus dan bisa
+// dapat spawn baru lagi.
+//
+// CATATAN FIX: versi sebelumnya cuma menghitung aktivitas KALAU pesannya
+// dikirim persis di channel spawn itu sendiri (`if (msg.channel.id !==
+// spawnChannelId) return`) -- jadi kalau orang cuma chat di channel lain,
+// timer tidak pernah jalan. Sekarang SEMUA pesan di channel manapun di
+// server dihitung sebagai aktivitas, tapi karakter TETAP selalu dikirim
+// ke channel resmi (bukan ke channel tempat pesan pemicu itu berasal).
 
 import { EmbedBuilder } from "discord.js";
 import {
@@ -24,9 +32,8 @@ import {
 } from "./database.js";
 import { fetchRandomCharacterWithRetry, RARITY_EMOJI } from "./anilist.js";
 
-// Guard di memori supaya 2 pesan yang datang nyaris bersamaan di
-// channel yang sama tidak sama-sama lolos cek "waktunya spawn" dan
-// memicu 2 fetch AniList sekaligus.
+// Guard di memori supaya 2 pesan yang datang nyaris bersamaan tidak
+// sama-sama lolos cek "waktunya spawn" dan memicu 2 fetch AniList sekaligus.
 const spawnLocks = new Set();
 
 // Cache channel spawn resmi supaya tidak query DB di SETIAP pesan.
@@ -40,7 +47,10 @@ export function invalidateSpawnChannelCache() {
   cacheLoadedAt = 0;
 }
 
-async function getSpawnChannelId() {
+// Diexport supaya claim.js bisa tau spawn sedang "disimpan" di bawah key
+// channel resmi yang mana -- karena sekarang state spawn TIDAK lagi
+// disimpan per-channel-pengirim, melainkan selalu per-channel-resmi.
+export async function getSpawnChannelId() {
   const now = Date.now();
   if (now - cacheLoadedAt < CACHE_TTL_MS) {
     return cachedSpawnChannelId;
@@ -80,31 +90,30 @@ function buildSpawnEmbed(character) {
     .setTimestamp();
 }
 
-// Dipanggil di SETIAP pesan masuk (bukan cuma command) untuk melacak
-// aktivitas channel dan memicu spawn kalau sudah waktunya.
+// Dipanggil di SETIAP pesan masuk di server manapun/channel manapun
+// (bukan cuma command) untuk melacak aktivitas & memicu spawn kalau
+// sudah waktunya. Aktivitas dihitung dari channel manapun, tapi hasil
+// spawn-nya selalu dikirim ke channel resmi.
 export async function maybeSpawnCharacter(msg) {
-  if (!msg.guild || !msg.channel?.send) return;
+  if (!msg.guild) return;
 
   const spawnChannelId = await getSpawnChannelId();
 
   // Belum ada channel resmi yang diatur admin -> jangan spawn di
-  // channel manapun. Ini yang memperbaiki masalah spawn "nyebar" ke
-  // semua channel yang ada chat.
+  // channel manapun sampai di-set lewat `msetspawnchannel`.
   if (!spawnChannelId) return;
 
-  // Bukan channel resmi -> abaikan total, jangan sentuh timer sama sekali.
-  if (msg.channel.id !== spawnChannelId) return;
+  if (spawnLocks.has(spawnChannelId)) return;
 
-  const channelId = msg.channel.id;
+  // PENTING: state (timer, spawn aktif) selalu disimpan di bawah key
+  // `spawnChannelId`, BUKAN `msg.channel.id`. Jadi chat di channel
+  // manapun tetap menghidupkan timer yang sama.
+  const existing = await getActiveSpawn(spawnChannelId);
 
-  if (spawnLocks.has(channelId)) return;
-
-  const existing = await getActiveSpawn(channelId);
-
-  // Belum pernah ada baris channel ini sama sekali -> mulai timer,
-  // JANGAN langsung spawn di pesan pertama channel itu.
+  // Baris channel resmi ini belum pernah dibuat sama sekali -> mulai
+  // timer, JANGAN langsung spawn di pesan pertama yang memicu ini.
   if (!existing) {
-    await touchSpawnTimer(channelId);
+    await touchSpawnTimer(spawnChannelId);
     return;
   }
 
@@ -112,24 +121,37 @@ export async function maybeSpawnCharacter(msg) {
   if (existing.anilist_id) {
     if (isTimedOut(existing.spawned_at)) {
       // Hangus karena kelamaan tidak ada yang klaim.
-      await clearSpawn(channelId);
+      await clearSpawn(spawnChannelId);
     }
     return; // selama belum hangus/diklaim, jangan spawn tumpang tindih
   }
 
   if (!isDueForSpawn(existing.last_spawn_at)) return;
 
-  spawnLocks.add(channelId);
+  spawnLocks.add(spawnChannelId);
 
   try {
     const character = await fetchRandomCharacterWithRetry();
     if (!character) return;
 
-    await setSpawn(channelId, character);
-    await msg.channel.send({ embeds: [buildSpawnEmbed(character)] });
+    // Ambil object channel resmi secara langsung (BUKAN msg.channel),
+    // karena pesan pemicu bisa datang dari channel lain sama sekali.
+    const targetChannel = await msg.client.channels
+      .fetch(spawnChannelId)
+      .catch(() => null);
+
+    if (!targetChannel || !targetChannel.send) {
+      console.error(
+        "Channel spawn resmi tidak ditemukan/tidak bisa diakses. Cek lagi hasil `msetspawnchannel`."
+      );
+      return;
+    }
+
+    await setSpawn(spawnChannelId, character);
+    await targetChannel.send({ embeds: [buildSpawnEmbed(character)] });
   } catch (error) {
     console.error("Gagal spawn karakter:", error.message);
   } finally {
-    spawnLocks.delete(channelId);
+    spawnLocks.delete(spawnChannelId);
   }
 }

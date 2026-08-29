@@ -4,16 +4,35 @@ import { callGemini } from "../gemini.js";
 import {
   buildCompanionMessages,
   updateCompanionAfterReply,
+  findNameMentionedUsers,
 } from "../companion.js";
 
 export async function handleAiCommand(client, msg, prompt) {
+  // Kalau user mention member lain di pesan ini (misal "@Budi lagi apa
+  // ya biasanya") ATAU cuma nyebut namanya biasa tanpa @mention (misal
+  // "gimana kabarnya Budi hari ini"), AI dikasih tau ringkasan/fakta
+  // soal member itu juga -- ini yang bikin bot kerasa "kenal" banyak
+  // orang di server, bukan cuma inget yang lagi chat doang.
+  const explicitMentions = [...msg.mentions.users.values()].filter(
+    (u) => u.id !== msg.author.id && u.id !== client.user.id
+  );
+
+  const nameMentioned = await findNameMentionedUsers(
+    msg,
+    prompt,
+    new Set([msg.author.id, client.user.id, ...explicitMentions.map((u) => u.id)])
+  );
+
+  const mentionedUsers = [...explicitMentions, ...nameMentioned];
+
   // Konteks sekarang datang dari companion memory (ringkasan + fakta +
   // 1 turn terakhir), BUKAN 5 pasang Q&A mentah seperti sebelumnya.
   // Ini yang membuat payload ke Gemini jauh lebih hemat token walau
   // riwayat chat sudah sangat panjang.
   const { messages, state } = await buildCompanionMessages(
     msg.author.id,
-    prompt
+    prompt,
+    mentionedUsers
   );
 
   const thinkingMessage = await msg.reply(

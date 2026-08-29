@@ -81,6 +81,16 @@ export async function initDB() {
     )
   `);
 
+  // ---- buffer chat biasa untuk "belajar pasif" (Moka kenal tiap member) ----
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS passive_chat_buffer (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT,
+      content TEXT,
+      created_at TEXT
+    )
+  `);
+
   return db;
 }
 
@@ -131,7 +141,7 @@ export async function getRelevantHistory(client, notifyChannelId, userId, replyM
         }
       }
     } catch (error) {
-      console.error("⚠️ Gagal mengambil reply history:", error.message);
+      console.error("Gagal mengambil reply history:", error.message);
     }
   }
 
@@ -260,6 +270,17 @@ export async function resetCompanion(userId) {
   await db.run(`DELETE FROM companion_memory WHERE user_id = ?`, userId);
 }
 
+// Read-only, TIDAK membuat baris baru kalau user itu belum pernah chat
+// sama sekali dengan bot -- dipakai untuk fitur "AI tau soal member lain
+// yang di-mention", supaya tidak nyampah bikin baris kosong untuk orang
+// yang cuma disebut-sebut tapi belum pernah ngobrol sama mokachan.
+export async function getCompanionPublicInfo(userId) {
+  return db.get(
+    `SELECT user_id, nickname, affection, summary, facts FROM companion_memory WHERE user_id = ?`,
+    userId
+  );
+}
+
 // ==================== SPAWN KARAKTER (channel) ====================
 
 export async function getActiveSpawn(channelId) {
@@ -354,10 +375,10 @@ export async function claimActiveCharacter(channelId, userId) {
   return spawn;
 }
 
-export async function getUserCollection(userId, limit = 10) {
+export async function getUserCollection(userId, limit = 100) {
   return db.all(
     `
-    SELECT name, series, rarity, claimed_at
+    SELECT id, name, series, rarity, image_url, claimed_at
     FROM character_claims
     WHERE user_id = ?
     ORDER BY id DESC
@@ -374,6 +395,61 @@ export async function getUserCollectionCount(userId) {
     userId
   );
   return row?.total || 0;
+}
+
+// Daftar user_id yang SUDAH PERNAH chat sama bot (punya baris companion_memory).
+// Dipakai untuk deteksi "nama disebut di kalimat biasa" (tanpa @mention) --
+// cuma dicek terhadap orang yang memang sudah punya data, karena kalau
+// belum pernah chat sama bot, tidak ada apa-apa juga yang bisa diceritakan.
+export async function listKnownCompanionUserIds(excludeUserId, limit = 100) {
+  const rows = await db.all(
+    `SELECT user_id FROM companion_memory WHERE user_id != ? LIMIT ?`,
+    excludeUserId,
+    limit
+  );
+  return rows.map((r) => r.user_id);
+}
+
+// ==================== BELAJAR PASIF (buffer chat biasa) ====================
+
+export async function addPassiveMessage(userId, content) {
+  await db.run(
+    `INSERT INTO passive_chat_buffer (user_id, content, created_at) VALUES (?, ?, ?)`,
+    userId,
+    content,
+    new Date().toISOString()
+  );
+}
+
+export async function getPassiveBuffer(userId) {
+  return db.all(
+    `SELECT id, content FROM passive_chat_buffer WHERE user_id = ? ORDER BY id ASC`,
+    userId
+  );
+}
+
+export async function getPassiveBufferCount(userId) {
+  const row = await db.get(
+    `SELECT COUNT(*) AS total FROM passive_chat_buffer WHERE user_id = ?`,
+    userId
+  );
+  return row?.total || 0;
+}
+
+// uptoId dikasih supaya cuma menghapus baris yang SUDAH diproses --
+// kalau ada pesan baru yang masuk pas proses rangkum lagi jalan, pesan
+// baru itu tidak ikut kehapus (dibiarkan buat batch berikutnya).
+// Tanpa uptoId (dipakai pas reset total), semua baris user itu dihapus.
+export async function clearPassiveBuffer(userId, uptoId = null) {
+  if (uptoId) {
+    await db.run(
+      `DELETE FROM passive_chat_buffer WHERE user_id = ? AND id <= ?`,
+      userId,
+      uptoId
+    );
+  } else {
+    await db.run(`DELETE FROM passive_chat_buffer WHERE user_id = ?`, userId);
+  }
 }
 
 // ==================== MODEL USAGE (untuk fitur stats) ====================

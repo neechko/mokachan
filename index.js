@@ -23,6 +23,7 @@ import { handleProfilCommand } from "./src/commands/profil.js";
 import { handleResetCompanionCommand } from "./src/commands/resetCompanion.js";
 import { handleSetSpawnChannelCommand } from "./src/commands/setSpawnChannel.js";
 import { maybeSpawnCharacter } from "./src/characterSpawn.js";
+import { recordPassiveMessage } from "./src/passiveLearning.js";
 
 validateConfig();
 
@@ -45,7 +46,7 @@ client.once("ready", async () => {
   console.log(`AI command: ${PREFIX}${COMMANDS.ai}`);
 
   if (!NOTIFY_CHANNEL_ID) {
-    console.warn("⚠️ CHANNEL_ID belum di-set.");
+    console.warn("CHANNEL_ID belum di-set.");
     return;
   }
 
@@ -74,6 +75,13 @@ client.on("messageCreate", async (msg) => {
   // channel-nya aktif chat, mirip mekanisme bot "Rimi-chan".
   maybeSpawnCharacter(msg).catch((error) =>
     console.error("maybeSpawnCharacter error:", error.message)
+  );
+
+  // ---- belajar pasif (Moka mengenal tiap member dari chat biasa) ----
+  // Jalan di semua channel yang bot punya akses, TIDAK pernah membalas
+  // apapun -- cuma diam-diam membangun profil tiap member di belakang layar.
+  recordPassiveMessage(msg).catch((error) =>
+    console.error("recordPassiveMessage error:", error.message)
   );
 
   // ---- lyrics ----
