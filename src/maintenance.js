@@ -67,9 +67,9 @@ export async function checkDiskSpace(client) {
 export async function runMaintenance(client) {
   try {
     await vacuumDatabase();
-    console.log("🧹 VACUUM selesai -- ruang kosong di database dikembalikan ke disk.");
+    console.log("VACUUM selesai -- ruang kosong di database dikembalikan ke disk.");
   } catch (error) {
-    console.error("⚠️ Gagal menjalankan VACUUM:", error.message);
+    console.error("Gagal menjalankan VACUUM:", error.message);
   }
 
   await checkDiskSpace(client);
