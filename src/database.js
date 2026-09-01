@@ -1,6 +1,6 @@
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
-import { HISTORY_COUNT } from "./config.js";
+import { HISTORY_COUNT, HISTORY_RETAIN_COUNT } from "./config.js";
 
 let db;
 
@@ -21,12 +21,15 @@ export async function initDB() {
     )
   `);
 
+  // ---- statistik Gemini SEBAGAI COUNTER, bukan log per-panggilan ----
+  // Sengaja BUKAN 1 baris per panggilan (yang lama begitu, jadi numpuk
+  // selamanya) -- cukup 1 baris per model, di-UPDATE terus. Ukurannya
+  // TETAP KECIL selamanya walau sudah dipakai jutaan kali.
   await db.exec(`
-    CREATE TABLE IF NOT EXISTS model_usage (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      model TEXT,
-      success INTEGER,
-      used_at TEXT
+    CREATE TABLE IF NOT EXISTS model_usage_stats (
+      model TEXT PRIMARY KEY,
+      success_count INTEGER DEFAULT 0,
+      fail_count INTEGER DEFAULT 0
     )
   `);
 
@@ -141,7 +144,7 @@ export async function getRelevantHistory(client, notifyChannelId, userId, replyM
         }
       }
     } catch (error) {
-      console.error("Gagal mengambil reply history:", error.message);
+      console.error("⚠️ Gagal mengambil reply history:", error.message);
     }
   }
 
@@ -174,6 +177,23 @@ export async function saveHistory(userId, prompt, result, model) {
     result,
     new Date().toISOString(),
     model
+  );
+
+  // AUTO-TRIM: history sekarang cuma dipakai buat command `mhistory`
+  // (tinjauan manual), BUKAN lagi sumber konteks AI (itu tugas
+  // companion_memory). Makanya aman disimpan cuma HISTORY_RETAIN_COUNT
+  // baris terakhir PER USER -- otomatis membersihkan diri sendiri tiap
+  // kali ada insert baru, tanpa perlu cron/scheduler terpisah.
+  await db.run(
+    `
+    DELETE FROM history
+    WHERE user_id = ? AND id NOT IN (
+      SELECT id FROM history WHERE user_id = ? ORDER BY id DESC LIMIT ?
+    )
+    `,
+    userId,
+    userId,
+    HISTORY_RETAIN_COUNT
   );
 }
 
@@ -452,18 +472,31 @@ export async function clearPassiveBuffer(userId, uptoId = null) {
   }
 }
 
+// Bikin ulang file .db supaya ruang kosong bekas baris yang sudah
+// dihapus (auto-trim history, buffer, dll) BENERAN dikembalikan ke
+// disk. SQLite tidak melakukan ini otomatis -- dipanggil berkala lewat
+// src/maintenance.js.
+export async function vacuumDatabase() {
+  await db.exec("VACUUM");
+}
+
 // ==================== MODEL USAGE (untuk fitur stats) ====================
 
 export async function logModelUsage(model, success) {
+  // UPSERT ke counter, BUKAN insert baris baru -- ukuran tabel ini
+  // tetap konstan (1 baris per nama model) walau sudah dipakai jutaan
+  // kali sekalipun.
   await db.run(
     `
-    INSERT INTO model_usage
-    (model, success, used_at)
+    INSERT INTO model_usage_stats (model, success_count, fail_count)
     VALUES (?, ?, ?)
+    ON CONFLICT(model) DO UPDATE SET
+      success_count = success_count + excluded.success_count,
+      fail_count = fail_count + excluded.fail_count
     `,
     model,
     success ? 1 : 0,
-    new Date().toISOString()
+    success ? 0 : 1
   );
 }
 
@@ -471,14 +504,13 @@ export async function getModelStats() {
   return db.all(`
     SELECT
       model,
-      SUM(success) AS sukses,
-      COUNT(*) AS total,
+      success_count AS sukses,
+      (success_count + fail_count) AS total,
       ROUND(
-        (SUM(success) * 100.0) / COUNT(*),
+        (success_count * 100.0) / NULLIF(success_count + fail_count, 0),
         2
       ) AS rate
-    FROM model_usage
-    GROUP BY model
+    FROM model_usage_stats
     ORDER BY rate DESC
   `);
 }

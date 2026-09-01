@@ -15,6 +15,15 @@ export const COMMAND_CASE_INSENSITIVE =
 // ==================== HISTORY / OUTPUT ====================
 
 export const HISTORY_COUNT = parseInt(process.env.HISTORY_COUNT, 10) || 5;
+
+// Berapa baris history mentah (mhistory) yang disimpan PER USER sebelum
+// otomatis kehapus sendiri. History ini cuma buat tinjauan manual --
+// BUKAN lagi sumber konteks AI (itu tugas companion_memory) -- jadi
+// aman disimpan terbatas. Ini yang mencegah tabel `history` numpuk
+// selamanya dan mentok-in disk hosting.
+export const HISTORY_RETAIN_COUNT =
+  parseInt(process.env.HISTORY_RETAIN_COUNT, 10) || 30;
+
 export const TRIM_CHARS = parseInt(process.env.TRIM_CHARS, 10) || 700;
 export const MAX_OUTPUT_CHARS =
   parseInt(process.env.MAX_OUTPUT_CHARS, 10) || 1800;

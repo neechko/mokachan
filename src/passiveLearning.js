@@ -70,7 +70,7 @@ export async function recordPassiveMessage(msg) {
   try {
     await learnFromBuffer(msg.author.id);
   } catch (error) {
-    console.error("⚠️ Gagal belajar dari chat biasa:", error.message);
+    console.error("Gagal belajar dari chat biasa:", error.message);
   } finally {
     learningLocks.delete(msg.author.id);
   }
@@ -148,7 +148,7 @@ ${buffered.map((row) => `- ${row.content}`).join("\n")}
       ),
     });
   } catch (error) {
-    console.error("⚠️ Gagal parse hasil belajar pasif:", error.message);
+    console.error("Gagal parse hasil belajar pasif:", error.message);
   }
 
   await clearPassiveBuffer(userId, lastId);

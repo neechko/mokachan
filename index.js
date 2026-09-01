@@ -24,8 +24,23 @@ import { handleResetCompanionCommand } from "./src/commands/resetCompanion.js";
 import { handleSetSpawnChannelCommand } from "./src/commands/setSpawnChannel.js";
 import { maybeSpawnCharacter } from "./src/characterSpawn.js";
 import { recordPassiveMessage } from "./src/passiveLearning.js";
+import { runMaintenance } from "./src/maintenance.js";
 
 validateConfig();
+
+// ==================== SAFETY NET GLOBAL ====================
+// Node.js (v15+) akan MEMATIKAN SELURUH PROSES kalau ada promise yang
+// reject tanpa ditangkap (unhandled rejection) -- termasuk hal sepele
+// seperti 1 query SQLite yang gagal gara-gara disk penuh. Ini jaring
+// pengaman terakhir: log errornya, TAPI bot tetap hidup dan tetap bisa
+// melayani command lain. Tanpa ini, satu error kecil = bot mati total.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection (bot tetap jalan):", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception (bot tetap jalan):", error);
+});
 
 // ==================== DISCORD CLIENT ====================
 
@@ -54,11 +69,31 @@ client.once("ready", async () => {
     const channel = await client.channels.fetch(NOTIFY_CHANNEL_ID);
 
     if (channel) {
-      await channel.send(`Halo guys! ${BOT_NAME} siap membantu 🚀`);
+      await channel.send(`Halo guys! ${BOT_NAME} siap membantu`);
     }
   } catch (error) {
     console.error("Gagal mengirim notifikasi:", error.message);
   }
+});
+
+// ==================== MAINTENANCE OTOMATIS ====================
+// Solusi otomatis buat disk penuh: VACUUM database + cek sisa disk
+// space berkala, tanpa perlu MySQL/campur tangan manual. Jalan sekali
+// pas bot start, lalu berulang tiap MAINTENANCE_INTERVAL_MS (default 6
+// jam) selama bot hidup.
+const MAINTENANCE_INTERVAL_MS =
+  parseInt(process.env.MAINTENANCE_INTERVAL_MS, 10) || 6 * 60 * 60 * 1000;
+
+client.once("ready", () => {
+  runMaintenance(client).catch((error) =>
+    console.error("runMaintenance error:", error.message)
+  );
+
+  setInterval(() => {
+    runMaintenance(client).catch((error) =>
+      console.error("runMaintenance error:", error.message)
+    );
+  }, MAINTENANCE_INTERVAL_MS);
 });
 
 // ==================== MESSAGE HANDLER (ROUTER) ====================
@@ -84,82 +119,112 @@ client.on("messageCreate", async (msg) => {
     console.error("recordPassiveMessage error:", error.message)
   );
 
-  // ---- lyrics ----
-  const lyricsCommand = `${PREFIX}${COMMANDS.lyrics}`;
-  if (commandMatches(content, lyricsCommand)) {
-    return handleLyricsCommand(msg, PREFIX, COMMANDS.lyrics, BOT_NAME);
-  }
-
-  // ---- ai ----
-  const aiCommand = `${PREFIX}${COMMANDS.ai}`;
-  if (commandMatches(content, aiCommand)) {
-    const prompt = content.slice(aiCommand.length).trim();
-
-    if (!prompt) {
-      return msg.reply(`Tulis pertanyaan setelah ${aiCommand}.`);
+  // Semua command di bawah ini dibungkus try/catch supaya kalau SATU
+  // command gagal (misal disk penuh, Gemini error, dsb), cuma command
+  // itu yang gagal -- bot tetap hidup dan tetap bisa layani command lain.
+  try {
+    // ---- lyrics ----
+    const lyricsCommand = `${PREFIX}${COMMANDS.lyrics}`;
+    if (commandMatches(content, lyricsCommand)) {
+      await handleLyricsCommand(msg, PREFIX, COMMANDS.lyrics, BOT_NAME);
+      return;
     }
 
-    return handleAiCommand(client, msg, prompt);
-  }
+    // ---- ai ----
+    const aiCommand = `${PREFIX}${COMMANDS.ai}`;
+    if (commandMatches(content, aiCommand)) {
+      const prompt = content.slice(aiCommand.length).trim();
 
-  // ---- history ----
-  const historyCommand = `${PREFIX}${COMMANDS.history}`;
-  if (commandMatches(content, historyCommand)) {
-    return handleHistoryCommand(msg);
-  }
+      if (!prompt) {
+        await msg.reply(`Tulis pertanyaan setelah ${aiCommand}.`);
+        return;
+      }
 
-  // ---- clearhistory ----
-  const clearHistoryCommand = `${PREFIX}${COMMANDS.clearHistory}`;
-  if (commandMatches(content, clearHistoryCommand)) {
-    return handleClearHistoryCommand(msg);
-  }
+      await handleAiCommand(client, msg, prompt);
+      return;
+    }
 
-  // ---- stats ----
-  const statsCommand = `${PREFIX}${COMMANDS.stats}`;
-  if (commandMatches(content, statsCommand)) {
-    return handleStatsCommand(msg);
-  }
+    // ---- history ----
+    const historyCommand = `${PREFIX}${COMMANDS.history}`;
+    if (commandMatches(content, historyCommand)) {
+      await handleHistoryCommand(msg);
+      return;
+    }
 
-  // ---- help ----
-  const helpCommand = `${PREFIX}${COMMANDS.help}`;
-  if (commandMatches(content, helpCommand)) {
-    return handleHelpCommand(msg);
-  }
+    // ---- clearhistory ----
+    const clearHistoryCommand = `${PREFIX}${COMMANDS.clearHistory}`;
+    if (commandMatches(content, clearHistoryCommand)) {
+      await handleClearHistoryCommand(msg);
+      return;
+    }
 
-  // ---- ping ----
-  const pingCommand = `${PREFIX}${COMMANDS.ping}`;
-  if (commandMatches(content, pingCommand)) {
-    return handlePingCommand(msg);
-  }
+    // ---- stats ----
+    const statsCommand = `${PREFIX}${COMMANDS.stats}`;
+    if (commandMatches(content, statsCommand)) {
+      await handleStatsCommand(msg);
+      return;
+    }
 
-  // ---- profil (companion) ----
-  const profilCommand = `${PREFIX}${COMMANDS.profil}`;
-  if (commandMatches(content, profilCommand)) {
-    return handleProfilCommand(msg);
-  }
+    // ---- help ----
+    const helpCommand = `${PREFIX}${COMMANDS.help}`;
+    if (commandMatches(content, helpCommand)) {
+      await handleHelpCommand(msg);
+      return;
+    }
 
-  // ---- resetcompanion ----
-  const resetCompanionCommand = `${PREFIX}${COMMANDS.resetcompanion}`;
-  if (commandMatches(content, resetCompanionCommand)) {
-    return handleResetCompanionCommand(msg);
-  }
+    // ---- ping ----
+    const pingCommand = `${PREFIX}${COMMANDS.ping}`;
+    if (commandMatches(content, pingCommand)) {
+      await handlePingCommand(msg);
+      return;
+    }
 
-  // ---- claim karakter ----
-  const claimCommand = `${PREFIX}${COMMANDS.claim}`;
-  if (commandMatches(content, claimCommand)) {
-    return handleClaimCommand(msg);
-  }
+    // ---- profil (companion) ----
+    const profilCommand = `${PREFIX}${COMMANDS.profil}`;
+    if (commandMatches(content, profilCommand)) {
+      await handleProfilCommand(msg);
+      return;
+    }
 
-  // ---- koleksi karakter ----
-  const koleksiCommand = `${PREFIX}${COMMANDS.koleksi}`;
-  if (commandMatches(content, koleksiCommand)) {
-    return handleKoleksiCommand(msg);
-  }
+    // ---- resetcompanion ----
+    const resetCompanionCommand = `${PREFIX}${COMMANDS.resetcompanion}`;
+    if (commandMatches(content, resetCompanionCommand)) {
+      await handleResetCompanionCommand(msg);
+      return;
+    }
 
-  // ---- setspawnchannel (admin) ----
-  const setSpawnChannelCommand = `${PREFIX}${COMMANDS.setSpawnChannel}`;
-  if (commandMatches(content, setSpawnChannelCommand)) {
-    return handleSetSpawnChannelCommand(msg);
+    // ---- claim karakter ----
+    const claimCommand = `${PREFIX}${COMMANDS.claim}`;
+    if (commandMatches(content, claimCommand)) {
+      await handleClaimCommand(msg);
+      return;
+    }
+
+    // ---- koleksi karakter ----
+    const koleksiCommand = `${PREFIX}${COMMANDS.koleksi}`;
+    if (commandMatches(content, koleksiCommand)) {
+      await handleKoleksiCommand(msg);
+      return;
+    }
+
+    // ---- setspawnchannel (admin) ----
+    const setSpawnChannelCommand = `${PREFIX}${COMMANDS.setSpawnChannel}`;
+    if (commandMatches(content, setSpawnChannelCommand)) {
+      await handleSetSpawnChannelCommand(msg);
+      return;
+    }
+  } catch (error) {
+    console.error(`Command "${content}" gagal diproses:`, error);
+
+    const isDiskFull = error?.message?.includes("SQLITE_FULL");
+
+    await msg
+      .reply(
+        isDiskFull
+          ? "Database lagi penuh (disk hosting habis). Kabari admin server ya, command lain mungkin masih kena imbas juga sampai ini dibereskan."
+          : "Ada error waktu proses command ini. Coba lagi sebentar lagi."
+      )
+      .catch(() => {}); // kalau reply pun gagal, cukup diam -- jangan sampai ini juga nge-throw
   }
 });
 
