@@ -2,7 +2,7 @@
   <img src="assets/moka-chan.webp" alt="Mokachan" width="360">
 </p>
 
-<h1 align="center">Mokachan</h1>
+<h1 align="center">Mokachan (^▽^)</h1>
 
 <p align="center">
 Bot Discord dengan AI companion berbasis Gemini dan sistem claim karakter anime otomatis dari AniList.
