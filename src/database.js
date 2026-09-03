@@ -1,14 +1,44 @@
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
+import { stat, statfs } from "node:fs/promises";
 import { HISTORY_COUNT, HISTORY_RETAIN_COUNT } from "./config.js";
 
 let db;
 
+// Filename used for both the main long-lived connection and any
+// short-lived probe connections opened to inspect on-disk state
+// without disturbing the main connection's in-memory pragma flags.
+const DB_FILENAME = "./mokachan_history.db";
+
+// Require at least this many times the current .db file size in free
+// disk space before attempting a full VACUUM. A full VACUUM writes an
+// entire fresh copy of the database to a temp file before swapping it
+// in, so anything less than the file's own size guarantees failure --
+// this multiplier leaves headroom for that plus normal DB growth while
+// the (potentially slow) operation runs.
+const VACUUM_SAFETY_MULTIPLIER = 1.5;
+
 export async function initDB() {
   db = await open({
-    filename: "./mokachan_history.db",
+    filename: DB_FILENAME,
     driver: sqlite3.Database,
   });
+
+  // Switch to incremental auto-vacuum. Without this, SQLite never
+  // returns space from deleted rows back to the OS until a full VACUUM
+  // runs, and a full VACUUM needs roughly as much temp disk space as
+  // the entire database file -- which can become impossible once disk
+  // is already tight. Incremental mode reclaims small chunks of free
+  // space continuously instead, avoiding that trap.
+  //
+  // Note: switching an EXISTING database into this mode still requires
+  // one successful full VACUUM to take effect -- this line alone is a
+  // no-op for a non-empty database until that happens. See
+  // convertToIncrementalVacuum() below for the guarded, one-time way
+  // to actually complete that conversion; call it manually (e.g. from
+  // an admin command) when disk space is healthy, not automatically
+  // here on every startup.
+  await db.exec("PRAGMA auto_vacuum = INCREMENTAL");
 
   await db.exec(`
     CREATE TABLE IF NOT EXISTS history (
@@ -472,12 +502,132 @@ export async function clearPassiveBuffer(userId, uptoId = null) {
   }
 }
 
-// Bikin ulang file .db supaya ruang kosong bekas baris yang sudah
-// dihapus (auto-trim history, buffer, dll) BENERAN dikembalikan ke
-// disk. SQLite tidak melakukan ini otomatis -- dipanggil berkala lewat
-// src/maintenance.js.
-export async function vacuumDatabase() {
+// ==================== VACUUM ====================
+
+// Free disk space (MB) for the filesystem containing `path`.
+async function getFreeDiskMBFor(path) {
+  const stats = await statfs(path);
+  return (stats.bavail * stats.bsize) / (1024 * 1024);
+}
+
+// Current size (MB) of the main .db file on disk.
+async function getDbFileSizeMB() {
+  const stats = await stat(DB_FILENAME);
+  return stats.size / (1024 * 1024);
+}
+
+// Rebuilds the entire .db file to reclaim free space. Needs roughly
+// as much temp disk space as the current file size, so this can fail
+// on its own if disk is already nearly full -- which is exactly what
+// caused an outage before this guard existed. Kept for one-time manual
+// use (see convertToIncrementalVacuum below); periodic maintenance uses
+// incrementalVacuum() instead (see below), which is far safer under
+// tight disk conditions.
+//
+// Refuses to run unless there is comfortably more free disk space than
+// the current database file size, so this can never again be the thing
+// that fills the disk. Pass { force: true } to bypass the check --
+// not recommended; only for a deliberate, supervised retry once you've
+// already confirmed enough space is free by other means.
+export async function vacuumDatabase({ force = false } = {}) {
+  if (!force) {
+    const [freeMB, dbSizeMB] = await Promise.all([
+      getFreeDiskMBFor(process.cwd()),
+      getDbFileSizeMB(),
+    ]);
+    const requiredMB = dbSizeMB * VACUUM_SAFETY_MULTIPLIER;
+
+    if (freeMB < requiredMB) {
+      throw new Error(
+        `Refusing to VACUUM: need ~${requiredMB.toFixed(0)} MB free ` +
+          `(${VACUUM_SAFETY_MULTIPLIER}x current ${dbSizeMB.toFixed(0)} MB db size) ` +
+          `but only ~${freeMB.toFixed(1)} MB available. Free up disk space first.`
+      );
+    }
+  }
+
   await db.exec("VACUUM");
+}
+
+// Opens a brand-new, separate connection to read the *actual* on-disk
+// auto_vacuum mode. The long-lived `db` connection used everywhere else
+// in this file reports back whatever mode was last *set* on it (via
+// "PRAGMA auto_vacuum = ...") even if that change was never actually
+// applied to the file -- SQLite only applies a mode change to an
+// existing, non-empty database after a full VACUUM completes. A fresh
+// connection has no pending in-memory override, so it reflects the
+// real, persisted file state.
+async function getPersistedAutoVacuumMode() {
+  const probe = await open({ filename: DB_FILENAME, driver: sqlite3.Database });
+  try {
+    const row = await probe.get("PRAGMA auto_vacuum");
+    return row["auto_vacuum"];
+  } finally {
+    await probe.close();
+  }
+}
+
+// One-time conversion for an existing, already-populated database into
+// incremental auto-vacuum mode. Setting the PRAGMA alone (as initDB
+// does on every startup) is not enough for a non-empty database -- it
+// only takes effect once followed by a full VACUUM. This does exactly
+// that, reusing vacuumDatabase()'s disk-space guard so it still refuses
+// to run without enough headroom.
+//
+// Call this manually (e.g. from an admin command) when disk space is
+// healthy. Do not call this automatically on every startup or
+// maintenance cycle -- it should run once, deliberately, and only
+// needs to be repeated if the database is ever recreated from scratch
+// without auto_vacuum already enabled.
+export async function convertToIncrementalVacuum() {
+  const currentMode = await getPersistedAutoVacuumMode();
+  if (currentMode === 2) {
+    return { converted: false, alreadyIncremental: true };
+  }
+
+  await db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+  await vacuumDatabase();
+
+  return { converted: true, alreadyIncremental: false };
+}
+
+// Reclaims a bounded number of free pages at a time (default: up to
+// 200 pages, roughly 800KB at SQLite's default page size). Requires
+// auto_vacuum = INCREMENTAL to be genuinely active on disk already (see
+// convertToIncrementalVacuum) -- otherwise this pragma is a silent
+// no-op. Much lower temp-space requirement than a full VACUUM, so it
+// stays safe to run frequently even when disk margin is thin.
+export async function incrementalVacuum(pageCount = 200) {
+  // Must use db.exec(), not db.run() -- run() only steps through the
+  // statement once and leaves most of the reclaim work undone. exec()
+  // drives it to completion (verified empirically: run() left ~99% of
+  // free pages unreclaimed in testing, exec() reclaimed all of them).
+  await db.exec(`PRAGMA incremental_vacuum(${pageCount})`);
+}
+
+// Reports current auto_vacuum mode and the number of free (reclaimable)
+// pages still sitting in the file.
+//
+// autoVacuumMode is whatever the long-lived connection currently has
+// *set* -- which can just be a pending value on a non-empty db that
+// was never actually applied (see comment in initDB).
+// persistedAutoVacuumMode is checked via a fresh connection and
+// reflects what's actually true on disk right now -- use THIS one to
+// decide whether incrementalVacuum() calls are doing anything.
+export async function getVacuumStatus() {
+  const autoVacuum = await db.get("PRAGMA auto_vacuum");
+  const freelistCount = await db.get("PRAGMA freelist_count");
+  const pageCount = await db.get("PRAGMA page_count");
+  const pageSize = await db.get("PRAGMA page_size");
+  const persistedAutoVacuumMode = await getPersistedAutoVacuumMode();
+
+  return {
+    autoVacuumMode: autoVacuum["auto_vacuum"],
+    persistedAutoVacuumMode,
+    freePages: freelistCount["freelist_count"],
+    totalPages: pageCount["page_count"],
+    pageSizeBytes: pageSize["page_size"],
+  };
 }
 
 // ==================== MODEL USAGE (untuk fitur stats) ====================

@@ -6,23 +6,21 @@ import {
 } from "discord.js";
 import { BOT_NAME } from "../config.js";
 import { getUserCollection } from "../database.js";
-import { RARITY_EMOJI } from "../anilist.js";
+import { RARITY_LABEL } from "../anilist.js";
 
-const PAGE_TIMEOUT_MS = 60 * 1000; // tombol nonaktif otomatis setelah 1 menit
+const PAGE_TIMEOUT_MS = 60 * 1000; // buttons disable automatically after 1 minute
 
 function buildPageEmbed(character, index, total, username) {
-  const emoji = RARITY_EMOJI[character.rarity] || "⚪";
+  const label = RARITY_LABEL[character.rarity] || "[Common]";
 
   return new EmbedBuilder()
-    .setTitle(`Collection - ${username}`)
+    .setTitle(`${username}'s Character Collection`)
     .setDescription(
-      `${emoji} **${character.name}**\n` +
-        `Dari: *${character.series}*\n` +
-        `Rarity: **${character.rarity}**`
+      `**${character.name}** ${label}\n` + `From: *${character.series}*`
     )
     .setImage(character.image_url)
-    .setColor(0xffaa00)
-    .setFooter({ text: `${BOT_NAME} • Karakter ${index + 1} dari ${total}` })
+    .setColor(0xf1c40f)
+    .setFooter({ text: `${BOT_NAME} - Character ${index + 1} of ${total}` })
     .setTimestamp();
 }
 
@@ -30,12 +28,12 @@ function buildRow(index, total, disabled = false) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("koleksi_prev")
-      .setLabel("◀️")
+      .setLabel("Previous")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled || index === 0),
     new ButtonBuilder()
       .setCustomId("koleksi_next")
-      .setLabel("▶️")
+      .setLabel("Next")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled || index === total - 1)
   );
@@ -46,7 +44,7 @@ export async function handleKoleksiCommand(msg) {
 
   if (!rows.length) {
     return msg.reply(
-      "Koleksi kamu masih kosong. Tunggu karakter muncul lalu ketik command claim!"
+      "Your collection is empty. Wait for a character to spawn, then use the claim command."
     );
   }
 
@@ -57,7 +55,7 @@ export async function handleKoleksiCommand(msg) {
     components: rows.length > 1 ? [buildRow(index, rows.length)] : [],
   });
 
-  // Kalau cuma punya 1 karakter, tidak perlu tombol/collector sama sekali.
+  // With only 1 character, no need for buttons/collector at all.
   if (rows.length <= 1) return;
 
   const collector = sentMessage.createMessageComponentCollector({
@@ -65,10 +63,10 @@ export async function handleKoleksiCommand(msg) {
   });
 
   collector.on("collect", async (interaction) => {
-    // Cuma pemilik command yang boleh geser halaman.
+    // Only the command owner can page through their own collection.
     if (interaction.user.id !== msg.author.id) {
       return interaction.reply({
-        content: "Ini koleksi orang lain, geser punya kamu sendiri ya~",
+        content: "This is someone else's collection -- use your own command to browse yours.",
         ephemeral: true,
       });
     }
@@ -91,7 +89,7 @@ export async function handleKoleksiCommand(msg) {
         components: [buildRow(index, rows.length, true)],
       });
     } catch {
-      // pesan mungkin sudah dihapus, abaikan saja
+      // message may have been deleted, ignore
     }
   });
 }

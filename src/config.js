@@ -128,6 +128,7 @@ export const COMMANDS = {
   koleksi: process.env.CMD_KOLEKSI || "koleksi",
   profil: process.env.CMD_PROFIL || "profil",
   resetcompanion: process.env.CMD_RESETCOMPANION || "resetcompanion",
+  diskusage: process.env.CMD_DISKUSAGE || "diskusage",
   setSpawnChannel: process.env.CMD_SETSPAWNCHANNEL || "setspawnchannel",
 };
 
@@ -135,12 +136,12 @@ export const COMMANDS = {
 
 export function validateConfig() {
   if (!DISCORD_TOKEN) {
-    console.error("DISCORD_TOKEN belum diatur.");
+    console.error("❌ DISCORD_TOKEN belum diatur.");
     process.exit(1);
   }
 
   if (!GEMINI_API_KEY) {
-    console.error("GEMINI_API_KEY belum diatur.");
+    console.error("❌ GEMINI_API_KEY belum diatur.");
     process.exit(1);
   }
 }

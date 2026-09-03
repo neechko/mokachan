@@ -1,14 +1,14 @@
-// Integrasi AniList (GraphQL API publik, gratis, tanpa API key) untuk
-// fitur "claim karakter". Kita ambil karakter random tapi tetap dibatasi
-// ke halaman-halaman ber-favorit tinggi (sort FAVOURITES_DESC) supaya
-// yang muncul karakter anime/game yang beneran dikenal & punya gambar,
-// bukan entri kosong/rusak.
+// AniList integration (public GraphQL API, free, no API key needed)
+// for the character claim feature. We pick a random character but
+// bias toward high-favourite pages (sort FAVOURITES_DESC) so what
+// shows up is recognizable anime/game characters with real artwork,
+// not empty/broken entries.
 
 const ANILIST_URL = "https://graphql.anilist.co";
 
-// Cakupan halaman yang dipakai untuk random. perPage=1 -> 1 halaman =
-// 1 karakter dari peringkat favorit ke-N. Rentang 1-400 sudah mencakup
-// ribuan karakter populer dari anime & game.
+// Page pool used for random picks. perPage=1 -> 1 page = 1 character
+// at rank N by favourites. A range of 1-400 covers thousands of
+// popular characters from anime and games.
 const MAX_PAGE_POOL = 400;
 
 const CHARACTER_QUERY = `
@@ -45,23 +45,66 @@ function computeRarity(favourites) {
   return "Common";
 }
 
-export const RARITY_EMOJI = {
-  Legendary: "★★★★★",
-  Epic: "★★★★",
-  Rare: "★★★",
-  Common: "★★",
+export const RARITY_LABEL = {
+  Legendary: "[Legendary]",
+  Epic: "[Epic]",
+  Rare: "[Rare]",
+  Common: "[Common]",
 };
 
-// Ambil satu karakter random dari AniList. Return null kalau gagal
-// (network error, rate limit, atau data tidak lengkap) supaya caller
-// bisa retry / skip spawn tanpa bikin bot crash.
+// ==================== CIRCUIT BREAKER ====================
+// If AniList starts rejecting requests (rate limit, IP block, outage),
+// retrying on every single spawn check just makes it worse and floods
+// the console with repeated identical errors. After a run of
+// consecutive failures, we stop trying entirely for a cooldown period
+// and log ONCE when entering/leaving cooldown, instead of on every
+// attempt.
+const MAX_CONSECUTIVE_FAILURES = 3;
+const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+
+let consecutiveFailures = 0;
+let cooldownUntil = 0;
+
+function isInCooldown() {
+  return Date.now() < cooldownUntil;
+}
+
+function recordFailure() {
+  consecutiveFailures += 1;
+
+  if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && !isInCooldown()) {
+    cooldownUntil = Date.now() + COOLDOWN_MS;
+    console.error(
+      `AniList failed ${consecutiveFailures} times in a row. ` +
+        `Pausing character spawns for ${COOLDOWN_MS / 60000} minutes.`
+    );
+  }
+}
+
+function recordSuccess() {
+  if (consecutiveFailures > 0) {
+    console.log("AniList requests recovered after previous failures.");
+  }
+  consecutiveFailures = 0;
+  cooldownUntil = 0;
+}
+
+// Fetches one random character from AniList. Returns null on failure
+// (network error, rate limit, incomplete data) so the caller can skip
+// the spawn without crashing.
 export async function fetchRandomCharacter() {
+  if (isInCooldown()) return null;
+
   const page = Math.floor(Math.random() * MAX_PAGE_POOL) + 1;
 
   try {
     const response = await fetch(ANILIST_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "User-Agent": "mokachan-discord-bot",
+      },
       body: JSON.stringify({
         query: CHARACTER_QUERY,
         variables: { page },
@@ -70,6 +113,7 @@ export async function fetchRandomCharacter() {
 
     if (!response.ok) {
       console.error(`AniList HTTP ${response.status}`);
+      recordFailure();
       return null;
     }
 
@@ -77,33 +121,41 @@ export async function fetchRandomCharacter() {
     const character = data?.data?.Page?.characters?.[0];
 
     if (!character || !character.image?.large) {
+      recordFailure();
       return null;
     }
+
+    recordSuccess();
 
     const media = character.media?.nodes?.[0];
     const favourites = character.favourites || 0;
 
     return {
       anilistId: character.id,
-      name: character.name?.full || character.name?.native || "Karakter Misterius",
+      name: character.name?.full || character.name?.native || "Unknown Character",
       image: character.image.large,
       favourites,
-      series:
-        media?.title?.romaji || media?.title?.english || "Tidak diketahui",
+      series: media?.title?.romaji || media?.title?.english || "Unknown",
       mediaType: media?.type || "ANIME",
       rarity: computeRarity(favourites),
     };
   } catch (error) {
-    console.error("Gagal fetch AniList:", error.message);
+    console.error("AniList request failed:", error.message);
+    recordFailure();
     return null;
   }
 }
 
-// Retry beberapa kali kalau kena halaman kosong/gagal, sebelum menyerah.
+// Retries a few times on failure/empty pages before giving up. Skips
+// entirely (returns null immediately) while in cooldown.
 export async function fetchRandomCharacterWithRetry(maxAttempts = 3) {
+  if (isInCooldown()) return null;
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const character = await fetchRandomCharacter();
     if (character) return character;
+    if (isInCooldown()) break; // stop retrying once cooldown kicks in
   }
+
   return null;
 }
