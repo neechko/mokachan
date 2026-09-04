@@ -23,6 +23,7 @@ import { handleProfilCommand } from "./src/commands/profil.js";
 import { handleResetCompanionCommand } from "./src/commands/resetCompanion.js";
 import { handleSetSpawnChannelCommand } from "./src/commands/setSpawnChannel.js";
 import { handleDiskUsageCommand } from "./src/commands/diskUsage.js";
+import { handleVacuumConvertCommand } from "./src/commands/vacuumConvert.js";
 import { maybeSpawnCharacter } from "./src/characterSpawn.js";
 import { recordPassiveMessage } from "./src/passiveLearning.js";
 import { runMaintenance } from "./src/maintenance.js";
@@ -324,6 +325,13 @@ client.on("messageCreate", async (msg) => {
     const diskUsageCommand = `${PREFIX}${COMMANDS.diskusage}`;
     if (commandMatches(content, diskUsageCommand)) {
       await handleDiskUsageCommand(msg);
+      return;
+    }
+
+    // ---- vacuumconvert (admin, one-time maintenance) ----
+    const vacuumConvertCommand = `${PREFIX}${COMMANDS.vacuumconvert}`;
+    if (commandMatches(content, vacuumConvertCommand)) {
+      await handleVacuumConvertCommand(msg);
       return;
     }
   } catch (error) {

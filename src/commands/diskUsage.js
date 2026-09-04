@@ -77,7 +77,11 @@ export async function handleDiskUsageCommand(msg) {
     const freeSpaceBytes = vacuumStatus.freePages * vacuumStatus.pageSizeBytes;
     reportLines.push(
       `Database file: ${formatBytes(dbSizeBytes)} total, ${formatBytes(freeSpaceBytes)} reclaimable (${vacuumStatus.freePages} free pages)`,
-      `auto_vacuum mode: ${vacuumStatus.autoVacuumMode === 2 ? "incremental (active)" : "not incremental -- a one-time full VACUUM is needed to enable it"}`,
+      // persistedAutoVacuumMode reflects the REAL on-disk state (checked
+      // via a fresh connection), not just whatever the long-lived
+      // connection has set in memory -- the latter can show "incremental"
+      // even when it was never actually applied to an existing database.
+      `auto_vacuum mode: ${vacuumStatus.persistedAutoVacuumMode === 2 ? "incremental (active)" : "not incremental -- run the vacuum conversion command once to enable it"}`,
       ""
     );
   }

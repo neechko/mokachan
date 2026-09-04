@@ -129,6 +129,7 @@ export const COMMANDS = {
   profil: process.env.CMD_PROFIL || "profil",
   resetcompanion: process.env.CMD_RESETCOMPANION || "resetcompanion",
   diskusage: process.env.CMD_DISKUSAGE || "diskusage",
+  vacuumconvert: process.env.CMD_VACUUMCONVERT || "vacuumconvert",
   setSpawnChannel: process.env.CMD_SETSPAWNCHANNEL || "setspawnchannel",
 };
 

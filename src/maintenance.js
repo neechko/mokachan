@@ -25,8 +25,6 @@ const DISK_WARNING_THRESHOLD_MB = 100; // below this is considered "low"
 const DISK_CRITICAL_THRESHOLD_MB = 25; // below this, don't touch VACUUM at all -- not enough headroom for any temp copy
 let alreadyWarned = false; // avoid spamming the warning every cycle while still low
 
-// Returns free disk space in MB, or null if the check fails (e.g. on a
-// platform that does not support statfs).
 export async function getFreeDiskMB() {
   try {
     const stats = await statfs(process.cwd());
@@ -38,8 +36,6 @@ export async function getFreeDiskMB() {
   }
 }
 
-// freeMB can be passed in to reuse a value already fetched this cycle
-// (runMaintenance does this) instead of calling statfs twice.
 export async function checkDiskSpace(client, freeMB = undefined) {
   if (freeMB === undefined) {
     freeMB = await getFreeDiskMB();
@@ -64,16 +60,10 @@ export async function checkDiskSpace(client, freeMB = undefined) {
       }
     }
   } else {
-    // Back to a healthy level -- reset the flag so a future warning
-    // can fire again if it gets low again later.
     alreadyWarned = false;
   }
 }
 
-// Called once on startup, then repeatedly via setInterval in index.js.
-// Runs a small incremental vacuum step first (bounded, low temp-space
-// cost) -- but only if there's enough free space to safely attempt it --
-// then checks remaining disk space.
 export async function runMaintenance(client) {
   const freeMB = await getFreeDiskMB();
 
@@ -96,13 +86,6 @@ export async function runMaintenance(client) {
       );
 
       if (after.persistedAutoVacuumMode !== 2) {
-        // incremental_vacuum is a no-op unless auto_vacuum is genuinely
-        // active on disk (mode 2) -- checked via a fresh connection, not
-        // just the flag set on the long-lived one. Converting an existing
-        // DB to that mode requires a one-time full VACUUM, so run
-        // convertToIncrementalVacuum() from database.js manually (e.g.
-        // via an admin command) while disk space is healthy -- not here,
-        // not automatically, and never while low on space.
         console.error(
           "auto_vacuum is not persisted as INCREMENTAL -- incremental_vacuum calls are currently a no-op. " +
             "Run convertToIncrementalVacuum() manually once, with plenty of free disk space."

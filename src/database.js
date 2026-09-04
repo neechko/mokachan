@@ -40,6 +40,18 @@ export async function initDB() {
   // here on every startup.
   await db.exec("PRAGMA auto_vacuum = INCREMENTAL");
 
+  // Force SQLite to keep its internal scratch space (used for sorting,
+  // GROUP BY, subqueries, and VACUUM's temporary copy) entirely in
+  // memory instead of writing temp files to disk. This matters because
+  // many container hosts mount a small, separate filesystem for temp
+  // files (often /tmp, sometimes just a few dozen MB, sometimes RAM
+  // backed) that is completely different from the volume the main
+  // database file lives on -- so "plenty of free disk" reported by a
+  // hosting panel does not guarantee SQLite's temp storage has room.
+  // Our data volumes here are tiny (a personal Discord bot), so the
+  // memory cost of this is negligible.
+  await db.exec("PRAGMA temp_store = MEMORY");
+
   await db.exec(`
     CREATE TABLE IF NOT EXISTS history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,10 +63,6 @@ export async function initDB() {
     )
   `);
 
-  // ---- statistik Gemini SEBAGAI COUNTER, bukan log per-panggilan ----
-  // Sengaja BUKAN 1 baris per panggilan (yang lama begitu, jadi numpuk
-  // selamanya) -- cukup 1 baris per model, di-UPDATE terus. Ukurannya
-  // TETAP KECIL selamanya walau sudah dipakai jutaan kali.
   await db.exec(`
     CREATE TABLE IF NOT EXISTS model_usage_stats (
       model TEXT PRIMARY KEY,
@@ -63,7 +71,6 @@ export async function initDB() {
     )
   `);
 
-  // ---- companion memory: ringkasan + fakta, menggantikan history mentah ----
   await db.exec(`
     CREATE TABLE IF NOT EXISTS companion_memory (
       user_id TEXT PRIMARY KEY,
@@ -78,7 +85,6 @@ export async function initDB() {
     )
   `);
 
-  // ---- spawn karakter aktif per channel ----
   await db.exec(`
     CREATE TABLE IF NOT EXISTS channel_spawn (
       channel_id TEXT PRIMARY KEY,
@@ -92,7 +98,6 @@ export async function initDB() {
     )
   `);
 
-  // ---- koleksi karakter yang sudah diklaim user ----
   await db.exec(`
     CREATE TABLE IF NOT EXISTS character_claims (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,7 +111,6 @@ export async function initDB() {
     )
   `);
 
-  // ---- pengaturan bot (misal: channel khusus spawn karakter) ----
   await db.exec(`
     CREATE TABLE IF NOT EXISTS bot_settings (
       key TEXT PRIMARY KEY,
@@ -114,7 +118,6 @@ export async function initDB() {
     )
   `);
 
-  // ---- buffer chat biasa untuk "belajar pasif" (Moka kenal tiap member) ----
   await db.exec(`
     CREATE TABLE IF NOT EXISTS passive_chat_buffer (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,7 +130,7 @@ export async function initDB() {
   return db;
 }
 
-// ==================== SETTINGS (key-value sederhana) ====================
+// ==================== SETTINGS (simple key-value) ====================
 
 export async function getSetting(key) {
   const row = await db.get(`SELECT value FROM bot_settings WHERE key = ?`, key);
@@ -146,8 +149,7 @@ export async function setSetting(key, value) {
   );
 }
 
-
-// ==================== HISTORY (untuk fitur AI) ====================
+// ==================== HISTORY (for the AI feature) ====================
 
 export async function getRelevantHistory(client, notifyChannelId, userId, replyMsgId) {
   const extraHistory = [];
@@ -174,7 +176,7 @@ export async function getRelevantHistory(client, notifyChannelId, userId, replyM
         }
       }
     } catch (error) {
-      console.error("⚠️ Gagal mengambil reply history:", error.message);
+      console.error("Failed to fetch reply history:", error.message);
     }
   }
 
@@ -209,11 +211,11 @@ export async function saveHistory(userId, prompt, result, model) {
     model
   );
 
-  // AUTO-TRIM: history sekarang cuma dipakai buat command `mhistory`
-  // (tinjauan manual), BUKAN lagi sumber konteks AI (itu tugas
-  // companion_memory). Makanya aman disimpan cuma HISTORY_RETAIN_COUNT
-  // baris terakhir PER USER -- otomatis membersihkan diri sendiri tiap
-  // kali ada insert baru, tanpa perlu cron/scheduler terpisah.
+  // AUTO-TRIM: history is now only used for the `mhistory` command
+  // (manual review), NOT the AI context source anymore (that's
+  // companion_memory's job). Safe to keep only the last
+  // HISTORY_RETAIN_COUNT rows PER USER -- self-cleans on every insert,
+  // no separate cron/scheduler needed.
   await db.run(
     `
     DELETE FROM history
@@ -246,8 +248,6 @@ export async function clearHistory(userId) {
 }
 
 // ==================== COMPANION MEMORY ====================
-// Sumber konteks utama untuk `mokachan` sekarang. Menggantikan
-// getRelevantHistory() yang lama (5 pasang Q&A mentah tiap request).
 
 const DEFAULT_COMPANION = {
   nickname: "",
@@ -320,10 +320,6 @@ export async function resetCompanion(userId) {
   await db.run(`DELETE FROM companion_memory WHERE user_id = ?`, userId);
 }
 
-// Read-only, TIDAK membuat baris baru kalau user itu belum pernah chat
-// sama sekali dengan bot -- dipakai untuk fitur "AI tau soal member lain
-// yang di-mention", supaya tidak nyampah bikin baris kosong untuk orang
-// yang cuma disebut-sebut tapi belum pernah ngobrol sama mokachan.
 export async function getCompanionPublicInfo(userId) {
   return db.get(
     `SELECT user_id, nickname, affection, summary, facts FROM companion_memory WHERE user_id = ?`,
@@ -331,7 +327,7 @@ export async function getCompanionPublicInfo(userId) {
   );
 }
 
-// ==================== SPAWN KARAKTER (channel) ====================
+// ==================== CHARACTER SPAWN (channel) ====================
 
 export async function getActiveSpawn(channelId) {
   return db.get(
@@ -368,8 +364,6 @@ export async function setSpawn(channelId, character) {
   );
 }
 
-// Menandai channel baru saja "dicek" tanpa spawn baru (dipakai untuk
-// inisialisasi timer 20 menit pertama kali channel itu ramai chat).
 export async function touchSpawnTimer(channelId) {
   await db.run(
     `
@@ -382,7 +376,6 @@ export async function touchSpawnTimer(channelId) {
   );
 }
 
-// Hapus spawn aktif (setelah diklaim atau expired karena timeout).
 export async function clearSpawn(channelId) {
   await db.run(
     `
@@ -399,12 +392,9 @@ export async function claimActiveCharacter(channelId, userId) {
   const spawn = await getActiveSpawn(channelId);
 
   if (!spawn || !spawn.anilist_id) {
-    return null; // tidak ada spawn aktif
+    return null;
   }
 
-  // Hapus dulu SEBELUM insert klaim supaya kalau 2 orang ngetik nyaris
-  // bersamaan, hanya yang pertama yang berhasil (karena UPDATE ini
-  // membuat spawn berikutnya sudah NULL saat proses kedua jalan).
   await clearSpawn(channelId);
 
   await db.run(
@@ -447,10 +437,6 @@ export async function getUserCollectionCount(userId) {
   return row?.total || 0;
 }
 
-// Daftar user_id yang SUDAH PERNAH chat sama bot (punya baris companion_memory).
-// Dipakai untuk deteksi "nama disebut di kalimat biasa" (tanpa @mention) --
-// cuma dicek terhadap orang yang memang sudah punya data, karena kalau
-// belum pernah chat sama bot, tidak ada apa-apa juga yang bisa diceritakan.
 export async function listKnownCompanionUserIds(excludeUserId, limit = 100) {
   const rows = await db.all(
     `SELECT user_id FROM companion_memory WHERE user_id != ? LIMIT ?`,
@@ -460,7 +446,7 @@ export async function listKnownCompanionUserIds(excludeUserId, limit = 100) {
   return rows.map((r) => r.user_id);
 }
 
-// ==================== BELAJAR PASIF (buffer chat biasa) ====================
+// ==================== PASSIVE LEARNING (chat buffer) ====================
 
 export async function addPassiveMessage(userId, content) {
   await db.run(
@@ -486,10 +472,6 @@ export async function getPassiveBufferCount(userId) {
   return row?.total || 0;
 }
 
-// uptoId dikasih supaya cuma menghapus baris yang SUDAH diproses --
-// kalau ada pesan baru yang masuk pas proses rangkum lagi jalan, pesan
-// baru itu tidak ikut kehapus (dibiarkan buat batch berikutnya).
-// Tanpa uptoId (dipakai pas reset total), semua baris user itu dihapus.
 export async function clearPassiveBuffer(userId, uptoId = null) {
   if (uptoId) {
     await db.run(
@@ -504,31 +486,16 @@ export async function clearPassiveBuffer(userId, uptoId = null) {
 
 // ==================== VACUUM ====================
 
-// Free disk space (MB) for the filesystem containing `path`.
 async function getFreeDiskMBFor(path) {
   const stats = await statfs(path);
   return (stats.bavail * stats.bsize) / (1024 * 1024);
 }
 
-// Current size (MB) of the main .db file on disk.
 async function getDbFileSizeMB() {
   const stats = await stat(DB_FILENAME);
   return stats.size / (1024 * 1024);
 }
 
-// Rebuilds the entire .db file to reclaim free space. Needs roughly
-// as much temp disk space as the current file size, so this can fail
-// on its own if disk is already nearly full -- which is exactly what
-// caused an outage before this guard existed. Kept for one-time manual
-// use (see convertToIncrementalVacuum below); periodic maintenance uses
-// incrementalVacuum() instead (see below), which is far safer under
-// tight disk conditions.
-//
-// Refuses to run unless there is comfortably more free disk space than
-// the current database file size, so this can never again be the thing
-// that fills the disk. Pass { force: true } to bypass the check --
-// not recommended; only for a deliberate, supervised retry once you've
-// already confirmed enough space is free by other means.
 export async function vacuumDatabase({ force = false } = {}) {
   if (!force) {
     const [freeMB, dbSizeMB] = await Promise.all([
@@ -549,14 +516,6 @@ export async function vacuumDatabase({ force = false } = {}) {
   await db.exec("VACUUM");
 }
 
-// Opens a brand-new, separate connection to read the *actual* on-disk
-// auto_vacuum mode. The long-lived `db` connection used everywhere else
-// in this file reports back whatever mode was last *set* on it (via
-// "PRAGMA auto_vacuum = ...") even if that change was never actually
-// applied to the file -- SQLite only applies a mode change to an
-// existing, non-empty database after a full VACUUM completes. A fresh
-// connection has no pending in-memory override, so it reflects the
-// real, persisted file state.
 async function getPersistedAutoVacuumMode() {
   const probe = await open({ filename: DB_FILENAME, driver: sqlite3.Database });
   try {
@@ -567,18 +526,6 @@ async function getPersistedAutoVacuumMode() {
   }
 }
 
-// One-time conversion for an existing, already-populated database into
-// incremental auto-vacuum mode. Setting the PRAGMA alone (as initDB
-// does on every startup) is not enough for a non-empty database -- it
-// only takes effect once followed by a full VACUUM. This does exactly
-// that, reusing vacuumDatabase()'s disk-space guard so it still refuses
-// to run without enough headroom.
-//
-// Call this manually (e.g. from an admin command) when disk space is
-// healthy. Do not call this automatically on every startup or
-// maintenance cycle -- it should run once, deliberately, and only
-// needs to be repeated if the database is ever recreated from scratch
-// without auto_vacuum already enabled.
 export async function convertToIncrementalVacuum() {
   const currentMode = await getPersistedAutoVacuumMode();
   if (currentMode === 2) {
@@ -591,29 +538,10 @@ export async function convertToIncrementalVacuum() {
   return { converted: true, alreadyIncremental: false };
 }
 
-// Reclaims a bounded number of free pages at a time (default: up to
-// 200 pages, roughly 800KB at SQLite's default page size). Requires
-// auto_vacuum = INCREMENTAL to be genuinely active on disk already (see
-// convertToIncrementalVacuum) -- otherwise this pragma is a silent
-// no-op. Much lower temp-space requirement than a full VACUUM, so it
-// stays safe to run frequently even when disk margin is thin.
 export async function incrementalVacuum(pageCount = 200) {
-  // Must use db.exec(), not db.run() -- run() only steps through the
-  // statement once and leaves most of the reclaim work undone. exec()
-  // drives it to completion (verified empirically: run() left ~99% of
-  // free pages unreclaimed in testing, exec() reclaimed all of them).
   await db.exec(`PRAGMA incremental_vacuum(${pageCount})`);
 }
 
-// Reports current auto_vacuum mode and the number of free (reclaimable)
-// pages still sitting in the file.
-//
-// autoVacuumMode is whatever the long-lived connection currently has
-// *set* -- which can just be a pending value on a non-empty db that
-// was never actually applied (see comment in initDB).
-// persistedAutoVacuumMode is checked via a fresh connection and
-// reflects what's actually true on disk right now -- use THIS one to
-// decide whether incrementalVacuum() calls are doing anything.
 export async function getVacuumStatus() {
   const autoVacuum = await db.get("PRAGMA auto_vacuum");
   const freelistCount = await db.get("PRAGMA freelist_count");
@@ -630,12 +558,9 @@ export async function getVacuumStatus() {
   };
 }
 
-// ==================== MODEL USAGE (untuk fitur stats) ====================
+// ==================== MODEL USAGE (for the stats feature) ====================
 
 export async function logModelUsage(model, success) {
-  // UPSERT ke counter, BUKAN insert baris baru -- ukuran tabel ini
-  // tetap konstan (1 baris per nama model) walau sudah dipakai jutaan
-  // kali sekalipun.
   await db.run(
     `
     INSERT INTO model_usage_stats (model, success_count, fail_count)
