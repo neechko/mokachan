@@ -1,4 +1,5 @@
-import { Client, GatewayIntentBits } from "discord.js";
+import discordjs from "discord.js";
+const { Client, GatewayIntentBits } = discordjs;
 import {
   DISCORD_TOKEN,
   NOTIFY_CHANNEL_ID,

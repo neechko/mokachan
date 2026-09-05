@@ -1,5 +1,6 @@
 import axios from "axios";
-import { EmbedBuilder } from "discord.js";
+import discordjs from "discord.js";
+const { EmbedBuilder } = discordjs;
 
 const LRCLIB_BASE = "https://lrclib.net/api";
 

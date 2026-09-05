@@ -1,4 +1,5 @@
-import { EmbedBuilder } from "discord.js";
+import discordjs from "discord.js";
+const { EmbedBuilder } = discordjs;
 import { BOT_NAME } from "../config.js";
 import { getModelStats } from "../database.js";
 

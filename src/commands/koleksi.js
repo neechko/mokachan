@@ -1,9 +1,5 @@
-import {
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-} from "discord.js";
+import discordjs from "discord.js";
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = discordjs;
 import { BOT_NAME } from "../config.js";
 import { getUserCollection } from "../database.js";
 import { RARITY_LABEL } from "../anilist.js";

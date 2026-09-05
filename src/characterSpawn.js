@@ -14,7 +14,8 @@
 // activity, but the character is still always sent to the official
 // channel (not the channel the triggering message came from).
 
-import { EmbedBuilder } from "discord.js";
+import discordjs from "discord.js";
+const { EmbedBuilder } = discordjs;
 import {
   CHARACTER_SPAWN_INTERVAL_MS,
   CHARACTER_SPAWN_TIMEOUT_MS,

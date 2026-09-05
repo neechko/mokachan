@@ -1,4 +1,5 @@
-import { EmbedBuilder } from "discord.js";
+import discordjs from "discord.js";
+const { EmbedBuilder } = discordjs;
 import { BOT_NAME } from "../config.js";
 import { getRecentHistory } from "../database.js";
 
@@ -10,7 +11,7 @@ export async function handleHistoryCommand(msg) {
   }
 
   const embed = new EmbedBuilder()
-    .setTitle("History chat dengan moka")
+    .setTitle("History Chatmu (terakhir 5)")
     .setColor(0xffaa00)
     .setFooter({ text: `${BOT_NAME}` })
     .setTimestamp();

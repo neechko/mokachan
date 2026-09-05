@@ -1,4 +1,5 @@
-import { PermissionFlagsBits } from "discord.js";
+import discordjs from "discord.js";
+const { PermissionFlagsBits } = discordjs;
 import { setSetting } from "../database.js";
 import { PREFIX, COMMANDS } from "../config.js";
 import { invalidateSpawnChannelCache } from "../characterSpawn.js";

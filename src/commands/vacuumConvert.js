@@ -1,4 +1,5 @@
-import { PermissionFlagsBits } from "discord.js";
+import discordjs from "discord.js";
+const { PermissionFlagsBits } = discordjs;
 import { convertToIncrementalVacuum, getVacuumStatus } from "../database.js";
 
 // One-time, admin-only command to convert the existing database file

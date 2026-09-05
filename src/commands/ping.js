@@ -1,4 +1,5 @@
-import { EmbedBuilder } from "discord.js";
+import discordjs from "discord.js";
+const { EmbedBuilder } = discordjs;
 
 export async function handlePingCommand(msg) {
   const latency = Date.now() - msg.createdTimestamp;
