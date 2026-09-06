@@ -10,10 +10,11 @@ import { logModelUsage } from "./database.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Model yang barusan kena 429 disimpan di sini supaya TIDAK dicoba
-// lagi selama masa cooldown, walaupun dipanggil dari pesan user yang
-// berbeda. Tanpa ini, tiap pesan baru akan tetap menghajar model yang
-// sudah jelas lagi limit, dan itu yang bikin makin banyak 429.
+// Models that just got hit with a 429 are stored here so they are NOT
+// retried again during the cooldown window, even if called from a
+// different user's message. Without this, every new message would
+// keep hammering a model that's already clearly rate-limited, which is
+// exactly what causes more 429s.
 const rateLimitedUntil = new Map(); // model -> timestamp ms
 
 function isOnCooldown(model) {
@@ -26,8 +27,8 @@ function putOnCooldown(model, retryAfterMs) {
   rateLimitedUntil.set(model, Date.now() + cooldown);
 }
 
-// Ambil header Retry-After kalau Gemini mengirimkannya, biar cooldown
-// mengikuti instruksi server, bukan cuma tebakan kita sendiri.
+// Reads the Retry-After header if Gemini sends one, so the cooldown
+// follows the server's own instruction instead of just our guess.
 function getRetryAfterMs(response) {
   const header = response.headers?.get?.("retry-after");
   if (!header) return null;
@@ -35,14 +36,15 @@ function getRetryAfterMs(response) {
   return Number.isFinite(seconds) ? seconds * 1000 : null;
 }
 
-// Coba SATU model tertentu, dengan retry untuk error yang sifatnya
-// sementara (network error / 5xx). Untuk 429 (limit/kuota habis),
-// TIDAK di-retry di model yang sama -> langsung serahkan ke fallback,
-// dan model tsb masuk cooldown supaya tidak dicoba lagi terlalu cepat.
+// Tries ONE specific model, retrying on transient errors (network
+// errors / 5xx). For 429 (rate limit/quota exhausted), it is NOT
+// retried on the same model -- it's handed off to the fallback
+// immediately, and that model goes on cooldown so it isn't hit again
+// too soon.
 //
-// `budget` adalah counter BERSAMA lintas semua model dalam satu
-// pemanggilan callGemini(). Begitu budget habis, fungsi ini berhenti
-// mengirim request sama sekali, apa pun jumlah model yang tersisa.
+// `budget` is a counter SHARED across all models within a single
+// callGemini() call. Once the budget runs out, this function stops
+// sending requests entirely, regardless of how many models remain.
 async function callGeminiModel(model, contents, systemMessage, budget) {
   let delay = GEMINI_RETRY_DELAY;
 
@@ -80,12 +82,12 @@ async function callGeminiModel(model, contents, systemMessage, budget) {
         const errorData = await response.json().catch(() => ({}));
         const status = response.status;
 
-        console.error(`❌ Gemini [${model}] HTTP ${status}:`, errorData);
+        console.error(`Gemini [${model}] HTTP ${status}:`, errorData);
 
         if (status === 429) {
-          // Limit/kuota habis untuk model ini -> jangan buang waktu
-          // retry, langsung gagal supaya caller pindah ke model lain,
-          // dan istirahatkan model ini biar tidak dihajar lagi terlalu cepat.
+          // Rate limit/quota exhausted for this model -- don't waste
+          // time retrying, fail immediately so the caller moves to the
+          // next model, and rest this model so it isn't hit again too soon.
           const retryAfterMs = getRetryAfterMs(response);
           putOnCooldown(model, retryAfterMs);
           await logModelUsage(model, false);
@@ -94,8 +96,8 @@ async function callGeminiModel(model, contents, systemMessage, budget) {
 
         if (attempt < GEMINI_MAX_RETRIES) {
           console.log(
-            `⏳ [${model}] Percobaan ${attempt}/${GEMINI_MAX_RETRIES}. ` +
-              `Menunggu ${delay}ms...`
+            `[${model}] Attempt ${attempt}/${GEMINI_MAX_RETRIES}. ` +
+              `Waiting ${delay}ms...`
           );
           await sleep(delay);
           delay *= 2;
@@ -116,7 +118,7 @@ async function callGeminiModel(model, contents, systemMessage, budget) {
 
       if (!result) {
         console.error(
-          `❌ Gemini [${model}] tidak mengembalikan teks:`,
+          `Gemini [${model}] returned no text:`,
           JSON.stringify(data)
         );
         await logModelUsage(model, false);
@@ -126,7 +128,7 @@ async function callGeminiModel(model, contents, systemMessage, budget) {
       await logModelUsage(model, true);
       return { failed: false, result };
     } catch (error) {
-      console.error(`❌ Gemini [${model}] request error:`, error.message);
+      console.error(`Gemini [${model}] request error:`, error.message);
 
       if (attempt < GEMINI_MAX_RETRIES) {
         await sleep(delay);
@@ -142,12 +144,14 @@ async function callGeminiModel(model, contents, systemMessage, budget) {
   return { failed: true, rateLimited: false };
 }
 
-// Coba semua model di GEMINI_MODELS berurutan. Berhenti di model
-// pertama yang berhasil.
-// - Model yang lagi cooldown (baru kena 429) dilewati TANPA request.
-// - Total request lintas semua model dibatasi oleh GEMINI_MAX_TOTAL_ATTEMPTS,
-//   jadi berapa pun banyaknya model, tidak akan spam API tanpa batas.
-// Kalau semua gagal atau budget habis, return null.
+// Tries every model in GEMINI_MODELS in order. Stops at the first one
+// that succeeds.
+// - A model currently on cooldown (just got a 429) is skipped WITHOUT
+//   sending a request.
+// - Total requests across all models are capped by
+//   GEMINI_MAX_TOTAL_ATTEMPTS, so no matter how many models are
+//   configured, the API is never spammed without limit.
+// Returns null if every model fails or the budget runs out.
 export async function callGemini(messages) {
   const systemMessage = messages.find(
     (message) => message.role === "system"
@@ -171,7 +175,7 @@ export async function callGemini(messages) {
 
     if (budget.used >= budget.max) {
       console.warn(
-        `⚠️ Batas total request Gemini (${budget.max}) tercapai untuk permintaan ini, berhenti.`
+        `Gemini total request limit (${budget.max}) reached for this call, stopping.`
       );
       break;
     }
@@ -183,22 +187,22 @@ export async function callGemini(messages) {
     }
 
     if (outcome.budgetExceeded) {
-      console.warn(`⚠️ Budget request habis saat mencoba "${model}", berhenti.`);
+      console.warn(`Request budget exhausted while trying "${model}", stopping.`);
       break;
     }
 
-    const reason = outcome.rateLimited ? "kena limit" : "error";
+    const reason = outcome.rateLimited ? "rate limited" : "error";
     console.warn(
-      `⚠️ Model "${model}" ${reason}, mencoba model berikutnya...`
+      `Model "${model}" ${reason}, trying the next model...`
     );
   }
 
   if (skippedCooldown.length) {
     console.warn(
-      `⏭️ Dilewati karena masih cooldown (baru kena limit): ${skippedCooldown.join(", ")}`
+      `Skipped due to active cooldown (recently rate limited): ${skippedCooldown.join(", ")}`
     );
   }
 
-  console.error("❌ Semua model Gemini gagal merespons.");
+  console.error("All Gemini models failed to respond.");
   return null;
 }

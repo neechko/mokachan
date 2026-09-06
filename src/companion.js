@@ -1,18 +1,18 @@
 // ==================== COMPANION MEMORY ====================
-// Menggantikan mekanisme lama: kirim 5 pasang Q&A mentah tiap request
-// (boros token, makin lama chat makin gede payload).
+// Replaces the old mechanism: sending 5 raw Q&A pairs on every request
+// (token-expensive, payload grows with chat length).
 //
-// Sekarang tiap request ke Gemini cuma bawa:
-//   1. System prompt persona + tingkat kedekatan (affection)
-//   2. RINGKASAN pendek hasil rangkuman AI sendiri (bukan histori mentah)
-//   3. Beberapa "fakta" pendek tentang user (nama, suka/tidak suka, dst)
-//   4. SATU turn terakhir (biar obrolan tetap nyambung natural)
-//   5. Prompt baru
+// Now every request to Gemini only carries:
+//   1. System prompt persona + closeness level (affection)
+//   2. A short SUMMARY produced by the AI itself (not raw history)
+//   3. A handful of short "facts" about the user (name, likes/dislikes, etc.)
+//   4. ONE last turn (to keep the conversation feeling natural/connected)
+//   5. The new prompt
 //
-// Ringkasan & fakta hanya di-REGENERATE setiap SUMMARY_EVERY_N_TURNS kali
-// (lewat 1 kali panggilan Gemini kecil), bukan tiap pesan. Jadi biaya
-// token per pesan biasa jadi hampir konstan, tidak tumbuh seiring
-// panjangnya riwayat chat.
+// The summary and facts are only REGENERATED every SUMMARY_EVERY_N_TURNS
+// (via a single small Gemini call), not on every message. So token cost
+// per ordinary message stays roughly constant instead of growing with
+// chat history length.
 
 import {
   BOT_NAME,
@@ -31,6 +31,10 @@ import {
 } from "./database.js";
 import { callGemini } from "./gemini.js";
 
+// NOTE: this label gets embedded directly into the Indonesian-language
+// AI persona prompt below (systemContent), so it's intentionally kept
+// in Indonesian too -- mixing languages inside a single prompt sent to
+// the model would be inconsistent and could confuse it.
 function affectionLabel(points) {
   if (points >= 150) return "sangat dekat, akrab seperti sahabat lama";
   if (points >= 60) return "sudah akrab dan nyaman ngobrol santai";
@@ -47,12 +51,13 @@ function safeParseFacts(raw) {
   }
 }
 
-// Ambil ringkasan + fakta milik member LAIN yang di-mention di pesan,
-// supaya AI bisa "nyambung" ngobrolin/komentar soal mereka juga -- ini
-// yang bikin bot kerasa tau siapa-siapa-aja di server, bukan cuma inget
-// user yang lagi ngobrol doang. Sengaja cuma pakai ringkasan & fakta
-// (bukan transkrip chat mentah member itu) supaya tetap hemat token dan
-// tidak membocorkan isi obrolan pribadi verbatim.
+// Fetch the summary + facts belonging to OTHER members mentioned in
+// the message, so the AI can naturally chime in/comment about them
+// too -- this is what makes the bot feel like it knows everyone on the
+// server, not just whoever it's currently talking to. Deliberately
+// only uses the summary & facts (not that member's raw chat transcript)
+// to stay token-efficient and avoid leaking their private conversation
+// verbatim.
 async function buildMentionedMembersContext(mentionedUsers) {
   if (!mentionedUsers.length) return "";
 
@@ -68,14 +73,14 @@ async function buildMentionedMembersContext(mentionedUsers) {
       const displayName = mentionedUsers[idx].username;
       const lines = [];
 
-      if (info.summary) lines.push(`- Tentang dia: ${info.summary}`);
+      if (info.summary) lines.push(`- About them: ${info.summary}`);
       if (facts.length) {
         lines.push(...facts.map((f) => `- ${f}`));
       }
 
       if (!lines.length) return null;
 
-      return `${displayName}${info.nickname ? ` (biasa dipanggil "${info.nickname}")` : ""}:\n${lines.join("\n")}`;
+      return `${displayName}${info.nickname ? ` (usually called "${info.nickname}")` : ""}:\n${lines.join("\n")}`;
     })
     .filter(Boolean);
 
@@ -83,26 +88,28 @@ async function buildMentionedMembersContext(mentionedUsers) {
 
   return `
 
-Member lain yang disebut/di-mention di pesan ini, ini yang kamu ingat soal mereka (boleh dipakai buat nyambungin obrolan, tapi jangan asal bocorin detail sensitif):
+Other members mentioned in this message -- here's what you remember about them (feel free to use it to connect the conversation, but don't casually leak sensitive details):
 ${blocks.join("\n\n")}`;
 }
 
-// Escape karakter spesial regex biar nama yang mengandung titik/tanda
-// baca aneh tidak bikin regex-nya error atau salah match.
+// Escapes regex special characters so a name containing dots or odd
+// punctuation doesn't break the regex or cause a wrong match.
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// Deteksi member yang disebut lewat NAMA BIASA di kalimat (tanpa
-// @mention), misal "gimana kabarnya Budi hari ini". Cuma dicek terhadap
-// user yang SUDAH PERNAH chat sama bot (ada di companion_memory) --
-// selain lebih murah (tidak perlu scan semua member server), member yang
-// belum pernah chat memang belum punya apa-apa yang bisa diceritakan.
+// Detects a member mentioned by PLAIN NAME in a sentence (without an
+// @mention), e.g. "how's Budi doing today". Only checked against users
+// who have ALREADY chatted with the bot before (present in
+// companion_memory) -- besides being cheaper (no need to scan every
+// server member), a member who's never chatted has nothing to tell
+// anyway.
 //
-// Dicocokkan ke username Discord ATAU nickname di server itu (kalau
-// pesannya datang dari guild), pakai word-boundary case-insensitive.
-// Nama yang cuma 1-2 huruf sengaja dilewati supaya tidak salah kena
-// kata umum (misal nama "Al" ke-trigger gara-gara kata lain).
+// Matched against the Discord username OR that server's nickname (if
+// the message came from a guild), using a case-insensitive word
+// boundary. Names of only 1-2 characters are deliberately skipped so
+// they don't false-trigger on unrelated words (e.g. a name like "Al"
+// matching inside some other word).
 export async function findNameMentionedUsers(msg, promptText, excludeIds = new Set()) {
   if (!promptText) return [];
 
@@ -121,7 +128,7 @@ export async function findNameMentionedUsers(msg, promptText, excludeIds = new S
 
       if (msg.guild) {
         const member = await msg.guild.members.fetch(id).catch(() => null);
-        if (!member) continue; // sudah keluar server / gagal fetch, skip
+        if (!member) continue; // left the server / fetch failed, skip
         username = member.user.username;
         nickname = member.nickname;
         user = member.user;
@@ -142,14 +149,14 @@ export async function findNameMentionedUsers(msg, promptText, excludeIds = new S
 
       if (isMentioned) found.push(user);
     } catch {
-      // gagal fetch salah satu kandidat, lanjut ke kandidat berikutnya
+      // failed to fetch one candidate, move on to the next
     }
   }
 
   return found;
 }
 
-// Bangun array `messages` siap kirim ke callGemini().
+// Builds the `messages` array ready to send to callGemini().
 export async function buildCompanionMessages(userId, prompt, mentionedUsers = []) {
   const state = await getOrCreateCompanion(userId);
   const facts = safeParseFacts(state.facts);
@@ -187,8 +194,8 @@ ${mentionedContext}
 
   const messages = [{ role: "system", content: systemContent }];
 
-  // Cuma bawa SATU turn terakhir (bukan 5), karena konteks jangka
-  // panjang sudah terwakili lewat ringkasan & fakta di atas.
+  // Only carry the ONE most recent turn (not 5), since long-term
+  // context is already represented via the summary and facts above.
   if (state.last_prompt && state.last_response) {
     messages.push({
       role: "user",
@@ -205,9 +212,14 @@ ${mentionedContext}
   return { messages, state };
 }
 
-// Minta Gemini merangkum ulang: ringkasan lama + turn baru -> ringkasan
-// baru yang singkat + daftar fakta pendek. Dipanggil hanya sesekali
-// (tiap SUMMARY_EVERY_N_TURNS), bukan tiap pesan.
+// Asks Gemini to re-summarize: old summary + new turn -> a new short
+// summary + short fact list. Only called occasionally (every
+// SUMMARY_EVERY_N_TURNS), not on every message.
+//
+// NOTE: the prompt content below is deliberately kept in Indonesian --
+// its output (summary/facts) gets embedded directly into the
+// Indonesian-language persona prompt in buildCompanionMessages above,
+// so keeping this consistent avoids mixing languages in what the model sees.
 async function regenerateSummary(state, prompt, reply) {
   const oldFacts = safeParseFacts(state.facts);
 
@@ -263,13 +275,13 @@ ${BOT_NAME}: ${reply}
         : oldFacts,
     };
   } catch (error) {
-    console.error("Gagal parse hasil ringkasan companion:", error.message);
+    console.error("Failed to parse companion summary result:", error.message);
     return null;
   }
 }
 
-// Dipanggil setelah AI berhasil membalas. Update affection, simpan turn
-// terakhir, dan (kalau sudah waktunya) regenerate ringkasan.
+// Called after the AI successfully replies. Updates affection, saves
+// the last turn, and (if it's time) regenerates the summary.
 export async function updateCompanionAfterReply(userId, state, prompt, reply) {
   const newAffection = Math.min(
     (state.affection || 0) + AFFECTION_PER_TURN,
@@ -313,10 +325,9 @@ export async function getCompanionProfile(userId) {
   };
 }
 
-// Versi read-only untuk lihat profil member LAIN (mprofil @user).
-// Return null kalau member itu belum pernah chat sama mokachan sama
-// sekali -- supaya tidak bikin baris companion_memory kosong cuma
-// gara-gara di-cek doang.
+// Read-only version to view ANOTHER member's profile (mprofil @user).
+// Returns null if that member has never chatted with mokachan at all --
+// so we don't create an empty companion_memory row just from being checked.
 export async function getCompanionPublicProfile(userId) {
   const info = await getCompanionPublicInfo(userId);
   if (!info) return null;
@@ -330,8 +341,8 @@ export async function getCompanionPublicProfile(userId) {
 
 export async function resetCompanionMemory(userId) {
   await resetCompanion(userId);
-  // Bersihin juga buffer chat biasa yang belum sempat diproses, biar
-  // reset ini benar-benar bersih total (tidak ada sisa yang nanti
-  // "menghidupkan lagi" summary lama begitu buffer kepenuhan lagi).
+  // Also clear any not-yet-processed passive chat buffer, so this
+  // reset is truly complete -- no leftover data that would later
+  // "revive" the old summary once the buffer fills up again.
   await clearPassiveBuffer(userId);
 }

@@ -7,18 +7,20 @@ export async function handleHelpCommand(msg) {
     .setTitle(`${BOT_NAME} Commands`)
     .setColor(0x00ffff)
     .setDescription(
-      `**${PREFIX}${COMMANDS.ai} [pertanyaan]** - Tanya ${BOT_NAME} menggunakan Gemini\n` +
-      `**${PREFIX}${COMMANDS.lyrics} [judul lagu]** - Cari lirik lagu\n` +
-      `**${PREFIX}${COMMANDS.history}** - Lihat chat terakhir\n` +
-      `**${PREFIX}${COMMANDS.clearHistory}** - Hapus semua history\n` +
-      `**${PREFIX}${COMMANDS.stats}** - Statistik penggunaan Gemini\n` +
-      `**${PREFIX}${COMMANDS.profil}** - Lihat kedekatanmu dengan ${BOT_NAME}\n` +
-      `**${PREFIX}${COMMANDS.resetcompanion}** - Reset memori companion\n` +
-      `**${PREFIX}${COMMANDS.claim}** - Klaim karakter yang sedang muncul\n` +
-      `**${PREFIX}${COMMANDS.koleksi}** - Lihat koleksi karaktermu\n` +
-      `**${PREFIX}${COMMANDS.setSpawnChannel}** - (admin) atur channel resmi spawn karakter\n` +
-      `**${PREFIX}${COMMANDS.ping}** - Cek latency\n` +
-      `**${PREFIX}${COMMANDS.help}** - Tampilkan command`
+      `**${PREFIX}${COMMANDS.ai} [question]** - Ask ${BOT_NAME} using Gemini\n` +
+      `**${PREFIX}${COMMANDS.lyrics} [song title]** - Look up song lyrics\n` +
+      `**${PREFIX}${COMMANDS.history}** - View recent chat history\n` +
+      `**${PREFIX}${COMMANDS.clearHistory}** - Clear all history\n` +
+      `**${PREFIX}${COMMANDS.stats}** - Gemini usage statistics\n` +
+      `**${PREFIX}${COMMANDS.profil}** - View your closeness with ${BOT_NAME}\n` +
+      `**${PREFIX}${COMMANDS.resetcompanion}** - Reset companion memory\n` +
+      `**${PREFIX}${COMMANDS.claim}** - Claim the currently active character\n` +
+      `**${PREFIX}${COMMANDS.koleksi}** - View your character collection\n` +
+      `**${PREFIX}${COMMANDS.setSpawnChannel}** - (admin) set the official character spawn channel\n` +
+      `**${PREFIX}${COMMANDS.diskusage}** - Show disk usage breakdown\n` +
+      `**${PREFIX}${COMMANDS.vacuumconvert}** - (admin) one-time database vacuum conversion\n` +
+      `**${PREFIX}${COMMANDS.ping}** - Check latency\n` +
+      `**${PREFIX}${COMMANDS.help}** - Show commands`
     )
     .setFooter({ text: `${BOT_NAME}` })
     .setTimestamp();

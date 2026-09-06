@@ -89,6 +89,80 @@ function recordSuccess() {
   cooldownUntil = 0;
 }
 
+const SEARCH_CHARACTER_QUERY = `
+  query ($search: String) {
+    Character(search: $search) {
+      id
+      name {
+        full
+        native
+      }
+      image {
+        large
+      }
+      favourites
+      media(perPage: 1, sort: POPULARITY_DESC) {
+        nodes {
+          type
+          title {
+            romaji
+            english
+          }
+        }
+      }
+    }
+  }
+`;
+
+function mapCharacter(character) {
+  if (!character || !character.image?.large) return null;
+
+  const media = character.media?.nodes?.[0];
+  const favourites = character.favourites || 0;
+
+  return {
+    anilistId: character.id,
+    name: character.name?.full || character.name?.native || "Unknown Character",
+    image: character.image.large,
+    favourites,
+    series: media?.title?.romaji || media?.title?.english || "Unknown",
+    mediaType: media?.type || "ANIME",
+    rarity: computeRarity(favourites),
+  };
+}
+
+// Looks up ONE specific character by name (exact-ish match via
+// AniList's own search relevance). Used by the owner-only admincard
+// command to grant a specific character instead of a random one.
+// Returns null if nothing matches or the request fails.
+export async function searchCharacterByName(name) {
+  try {
+    const response = await fetch(ANILIST_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "User-Agent": "mokachan-discord-bot",
+      },
+      body: JSON.stringify({
+        query: SEARCH_CHARACTER_QUERY,
+        variables: { search: name },
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(`AniList HTTP ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json();
+    return mapCharacter(data?.data?.Character);
+  } catch (error) {
+    console.error("AniList search request failed:", error.message);
+    return null;
+  }
+}
+
 // Fetches one random character from AniList. Returns null on failure
 // (network error, rate limit, incomplete data) so the caller can skip
 // the spawn without crashing.
@@ -118,27 +192,15 @@ export async function fetchRandomCharacter() {
     }
 
     const data = await response.json();
-    const character = data?.data?.Page?.characters?.[0];
+    const character = mapCharacter(data?.data?.Page?.characters?.[0]);
 
-    if (!character || !character.image?.large) {
+    if (!character) {
       recordFailure();
       return null;
     }
 
     recordSuccess();
-
-    const media = character.media?.nodes?.[0];
-    const favourites = character.favourites || 0;
-
-    return {
-      anilistId: character.id,
-      name: character.name?.full || character.name?.native || "Unknown Character",
-      image: character.image.large,
-      favourites,
-      series: media?.title?.romaji || media?.title?.english || "Unknown",
-      mediaType: media?.type || "ANIME",
-      rarity: computeRarity(favourites),
-    };
+    return character;
   } catch (error) {
     console.error("AniList request failed:", error.message);
     recordFailure();

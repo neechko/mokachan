@@ -25,6 +25,7 @@ import { handleResetCompanionCommand } from "./src/commands/resetCompanion.js";
 import { handleSetSpawnChannelCommand } from "./src/commands/setSpawnChannel.js";
 import { handleDiskUsageCommand } from "./src/commands/diskUsage.js";
 import { handleVacuumConvertCommand } from "./src/commands/vacuumConvert.js";
+import { handleAdminCardCommand } from "./src/commands/adminCard.js";
 import { maybeSpawnCharacter } from "./src/characterSpawn.js";
 import { recordPassiveMessage } from "./src/passiveLearning.js";
 import { runMaintenance } from "./src/maintenance.js";
@@ -333,6 +334,14 @@ client.on("messageCreate", async (msg) => {
     const vacuumConvertCommand = `${PREFIX}${COMMANDS.vacuumconvert}`;
     if (commandMatches(content, vacuumConvertCommand)) {
       await handleVacuumConvertCommand(msg);
+      return;
+    }
+
+    // ---- admincard (owner-only, direct database grant) ----
+    const adminCardCommand = `${PREFIX}${COMMANDS.admincard}`;
+    if (commandMatches(content, adminCardCommand)) {
+      const rawArgs = content.slice(adminCardCommand.length).trim();
+      await handleAdminCardCommand(msg, rawArgs);
       return;
     }
   } catch (error) {

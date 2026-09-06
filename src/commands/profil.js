@@ -6,10 +6,10 @@ import {
   getCompanionPublicProfile,
 } from "../companion.js";
 
-// `mprofil` -> lihat profilmu sendiri (otomatis dibuat kalau belum ada).
-// `mprofil @member` -> lihat apa yang mokachan inget soal member lain
-// (read-only, tidak bikin baris baru), biar antar member bisa saling
-// kenal lewat bot.
+// `mprofil` -> view your own profile (auto-created if it doesn't exist yet).
+// `mprofil @member` -> view what mokachan remembers about another member
+// (read-only, doesn't create a new row), so members can get to know each
+// other through the bot.
 export async function handleProfilCommand(msg) {
   const targetUser = msg.mentions.users.first() || msg.author;
   const isSelf = targetUser.id === msg.author.id;
@@ -20,29 +20,29 @@ export async function handleProfilCommand(msg) {
 
   if (!profile) {
     return msg.reply(
-      `${targetUser.username} belum pernah ngobrol sama ${BOT_NAME}, jadi belum ada yang bisa ditampilkan.`
+      `${targetUser.username} has never chatted with ${BOT_NAME} yet, so there's nothing to show.`
     );
   }
 
   const embed = new EmbedBuilder()
     .setTitle(
       isSelf
-        ? `Hubunganmu dengan ${BOT_NAME}`
-        : `Hubungan ${targetUser.username} dengan ${BOT_NAME}`
+        ? `Your relationship with ${BOT_NAME}`
+        : `${targetUser.username}'s relationship with ${BOT_NAME}`
     )
     .addFields(
-      { name: "Poin kedekatan", value: `${profile.affection}`, inline: true },
+      { name: "Affection points", value: `${profile.affection}`, inline: true },
       { name: "Status", value: profile.label, inline: true },
       {
-        name: "Panggilan",
-        value: profile.nickname || "(belum ada)",
+        name: "Nickname",
+        value: profile.nickname || "(none yet)",
         inline: true,
       },
       {
-        name: "Yang diingat",
+        name: "What's remembered",
         value: profile.facts.length
-          ? profile.facts.map((f) => `• ${f}`).join("\n")
-          : "(belum ada catatan)",
+          ? profile.facts.map((f) => `- ${f}`).join("\n")
+          : "(no notes yet)",
       }
     )
     .setColor(0xff69b4)

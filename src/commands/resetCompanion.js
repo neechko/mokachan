@@ -4,6 +4,6 @@ export async function handleResetCompanionCommand(msg) {
   await resetCompanionMemory(msg.author.id);
 
   return msg.reply(
-    "Memori companion (ringkasan, fakta, poin kedekatan) berhasil direset."
+    "Companion memory (summary, facts, affection points) has been reset."
   );
 }

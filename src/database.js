@@ -437,6 +437,27 @@ export async function getUserCollectionCount(userId) {
   return row?.total || 0;
 }
 
+// Directly inserts a character into a user's collection, bypassing the
+// normal spawn/claim flow entirely. Used by the owner-only admincard
+// command -- does NOT touch channel_spawn state at all, so it has no
+// effect on the normal spawn timer/active-spawn logic for anyone else.
+export async function grantCharacterDirectly(userId, character) {
+  await db.run(
+    `
+    INSERT INTO character_claims
+    (user_id, anilist_id, name, series, image_url, rarity, claimed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    `,
+    userId,
+    character.anilistId,
+    character.name,
+    character.series,
+    character.image,
+    character.rarity,
+    new Date().toISOString()
+  );
+}
+
 export async function listKnownCompanionUserIds(excludeUserId, limit = 100) {
   const rows = await db.all(
     `SELECT user_id FROM companion_memory WHERE user_id != ? LIMIT ?`,

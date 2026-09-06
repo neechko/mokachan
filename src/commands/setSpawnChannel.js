@@ -11,7 +11,7 @@ export async function handleSetSpawnChannelCommand(msg) {
 
   if (!isAdmin) {
     return msg.reply(
-      "Cuma admin/moderator server (izin *Manage Server*) yang boleh atur channel spawn."
+      "Only a server admin/moderator (Manage Server permission) can set the spawn channel."
     );
   }
 
@@ -19,7 +19,7 @@ export async function handleSetSpawnChannelCommand(msg) {
   invalidateSpawnChannelCache();
 
   return msg.reply(
-    `Channel ini (<#${msg.channel.id}>) sekarang jadi channel resmi untuk spawn karakter.\n` +
-      `Karakter cuma akan muncul di sini. Ketik \`${PREFIX}${COMMANDS.claim}\` saat ada yang muncul!`
+    `This channel (<#${msg.channel.id}>) is now the official character spawn channel.\n` +
+      `Characters will only appear here. Type \`${PREFIX}${COMMANDS.claim}\` when one shows up!`
   );
 }

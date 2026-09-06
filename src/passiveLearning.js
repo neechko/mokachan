@@ -1,19 +1,20 @@
-// ==================== BELAJAR PASIF ====================
-// Ini yang bikin Moka "kenal" tiap member di server, BUKAN cuma yang
-// pernah manggil command `mokachan`. Cara kerjanya:
+// ==================== PASSIVE LEARNING ====================
+// This is what makes Moka "know" every member on the server, not just
+// whoever has called the `mokachan` command before. How it works:
 //
-// 1. Tiap pesan BIASA (bukan command) di channel manapun ditampung ke
-//    buffer per user (`passive_chat_buffer`).
-// 2. Begitu buffer user itu sudah PASSIVE_LEARN_BATCH_SIZE pesan, baru
-//    SATU KALI panggilan Gemini buat merangkum jadi update summary +
-//    fakta di `companion_memory` -- tabel yang SAMA dipakai command
-//    `mokachan`, jadi profilnya nyambung/menyatu.
-// 3. Ini TIDAK pernah membalas apapun ke channel -- murni belajar diam2
-//    di belakang layar.
+// 1. Every ORDINARY message (not a command) in any channel gets
+//    buffered per user (`passive_chat_buffer`).
+// 2. Once that user's buffer reaches PASSIVE_LEARN_BATCH_SIZE messages,
+//    ONE Gemini call summarizes it into an update to the summary +
+//    facts in `companion_memory` -- the SAME table used by the
+//    `mokachan` command, so the profile stays unified.
+// 3. This NEVER replies to the channel -- it's purely learning quietly
+//    in the background.
 //
-// Kenapa tidak panggil Gemini tiap pesan? Karena itu boros banget & bisa
-// bikin bot kena rate limit / lag di server ramai. Batching seperti ini
-// bikin biaya token tetap terkendali walau server aktif banget.
+// Why not call Gemini on every message? Because that would be very
+// wasteful and could get the bot rate-limited / laggy on an active
+// server. Batching like this keeps token cost under control even on a
+// very active server.
 
 import {
   PASSIVE_LEARN_BATCH_SIZE,
@@ -32,8 +33,8 @@ import {
 } from "./database.js";
 import { callGemini } from "./gemini.js";
 
-// Guard supaya 1 user tidak diproses 2x bersamaan kalau kebetulan 2
-// pesan dia nyampe batas batch nyaris bersamaan.
+// Guard so one user isn't processed twice at the same time if two of
+// their messages happen to hit the batch threshold almost simultaneously.
 const learningLocks = new Set();
 
 function safeParseFacts(raw) {
@@ -45,16 +46,18 @@ function safeParseFacts(raw) {
   }
 }
 
-// Dipanggil di SETIAP pesan masuk (dari index.js). Return cepat kalau
-// pesannya command / kosong / kependekan, supaya tidak nyampah buffer.
+// Called on EVERY incoming message (from index.js). Returns early if
+// the message is a command / empty / too short, so the buffer doesn't
+// fill up with noise.
 export async function recordPassiveMessage(msg) {
   if (!msg.guild || msg.author.bot) return;
 
   const content = msg.content.trim();
   if (!content) return;
 
-  // Command (diawali prefix bot) sudah punya jalur belajarnya sendiri
-  // lewat companion.js pas AI membalas -- jangan diproses dobel di sini.
+  // Commands (starting with the bot's prefix) already have their own
+  // learning path via companion.js when the AI replies -- don't
+  // double-process them here.
   if (content.toLowerCase().startsWith(PREFIX.toLowerCase())) return;
 
   if (content.length < PASSIVE_LEARN_MIN_LENGTH) return;
@@ -70,12 +73,17 @@ export async function recordPassiveMessage(msg) {
   try {
     await learnFromBuffer(msg.author.id);
   } catch (error) {
-    console.error("Gagal belajar dari chat biasa:", error.message);
+    console.error("Failed to learn from ordinary chat:", error.message);
   } finally {
     learningLocks.delete(msg.author.id);
   }
 }
 
+// NOTE: the prompt content below (messages sent to Gemini) is
+// deliberately kept in Indonesian -- its output (summary/facts) feeds
+// into the same companion_memory fields used by the Indonesian-language
+// AI persona prompt in companion.js, so keeping it consistent avoids
+// mixing languages in what the model produces.
 async function learnFromBuffer(userId) {
   const buffered = await getPassiveBuffer(userId);
   if (!buffered.length) return;
@@ -148,7 +156,7 @@ ${buffered.map((row) => `- ${row.content}`).join("\n")}
       ),
     });
   } catch (error) {
-    console.error("Gagal parse hasil belajar pasif:", error.message);
+    console.error("⚠️ Gagal parse hasil belajar pasif:", error.message);
   }
 
   await clearPassiveBuffer(userId, lastId);
