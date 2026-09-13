@@ -2,7 +2,7 @@ import discordjs from "discord.js";
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = discordjs;
 import { BOT_NAME } from "../config.js";
 import { getUserCollection } from "../database.js";
-import { RARITY_LABEL } from "../anilist.js";
+import { RARITY_LABEL } from "../rarity.js";
 
 const PAGE_TIMEOUT_MS = 60 * 1000; // buttons disable automatically after 1 minute
 

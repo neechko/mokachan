@@ -104,6 +104,22 @@ export const PASSIVE_LEARN_BATCH_SIZE =
 export const PASSIVE_LEARN_MIN_LENGTH =
   parseInt(process.env.PASSIVE_LEARN_MIN_LENGTH, 10) || 4;
 
+// ==================== REAL-TIME CHANNEL CONTEXT ====================
+// This is what lets the AI understand topics involving OTHER members
+// talking to each other, not just the long-term profile of whoever is
+// invoking the command. Companion memory (above) is slow-updating,
+// per-user, and built from summarization -- it has no visibility into
+// what's happening in the channel RIGHT NOW. This fetches the actual
+// recent messages in the channel fresh on every `mokachan` call
+// (never stored, purely ephemeral) so the AI can follow an ongoing
+// conversation between other people and answer questions about it
+// naturally, the same way a person reading the channel would.
+export const RECENT_CONTEXT_MESSAGE_COUNT =
+  parseInt(process.env.RECENT_CONTEXT_MESSAGE_COUNT, 10) || 8;
+
+export const RECENT_CONTEXT_TRIM_CHARS =
+  parseInt(process.env.RECENT_CONTEXT_TRIM_CHARS, 10) || 200;
+
 // ==================== ANIME CHARACTER CLAIM (Rimi-chan-style spawn) ====================
 // While a server has chat activity, a random character from AniList
 // automatically appears every CHARACTER_SPAWN_INTERVAL_MS (default 20

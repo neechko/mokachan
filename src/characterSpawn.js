@@ -31,7 +31,7 @@ import {
   touchSpawnTimer,
   getSetting,
 } from "./database.js";
-import { fetchRandomCharacterWithRetry, RARITY_LABEL } from "./anilist.js";
+import { fetchRandomCharacterAnySource, RARITY_LABEL } from "./characterSource.js";
 
 // In-memory guard so two messages arriving almost simultaneously don't
 // both pass the "time to spawn" check and trigger two AniList fetches.
@@ -87,7 +87,7 @@ function buildSpawnEmbed(character) {
     )
     .setImage(character.image)
     .setColor(0x5865f2)
-    .setFooter({ text: BOT_NAME })
+    .setFooter({ text: `${BOT_NAME} - source: ${character.source || "unknown"}` })
     .setTimestamp();
 }
 
@@ -133,7 +133,7 @@ export async function maybeSpawnCharacter(msg) {
   spawnLocks.add(spawnChannelId);
 
   try {
-    const character = await fetchRandomCharacterWithRetry();
+    const character = await fetchRandomCharacterAnySource();
     if (!character) return;
 
     // Fetch the official channel object directly (NOT msg.channel),

@@ -1,3 +1,7 @@
+import { computeRarity, RARITY_LABEL } from "./rarity.js";
+
+export { RARITY_LABEL };
+
 // AniList integration (public GraphQL API, free, no API key needed)
 // for the character claim feature. We pick a random character but
 // bias toward high-favourite pages (sort FAVOURITES_DESC) so what
@@ -38,20 +42,6 @@ const CHARACTER_QUERY = `
   }
 `;
 
-function computeRarity(favourites) {
-  if (favourites >= 20000) return "Legendary";
-  if (favourites >= 5000) return "Epic";
-  if (favourites >= 1000) return "Rare";
-  return "Common";
-}
-
-export const RARITY_LABEL = {
-  Legendary: "[Legendary]",
-  Epic: "[Epic]",
-  Rare: "[Rare]",
-  Common: "[Common]",
-};
-
 // ==================== CIRCUIT BREAKER ====================
 // If AniList starts rejecting requests (rate limit, IP block, outage),
 // retrying on every single spawn check just makes it worse and floods
@@ -67,6 +57,12 @@ let cooldownUntil = 0;
 
 function isInCooldown() {
   return Date.now() < cooldownUntil;
+}
+
+// Exposed so the multi-source picker (characterSource.js) can check
+// this without triggering a request.
+export function isAniListInCooldown() {
+  return isInCooldown();
 }
 
 function recordFailure() {
@@ -128,6 +124,7 @@ function mapCharacter(character) {
     series: media?.title?.romaji || media?.title?.english || "Unknown",
     mediaType: media?.type || "ANIME",
     rarity: computeRarity(favourites),
+    source: "anilist",
   };
 }
 

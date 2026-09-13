@@ -5,6 +5,7 @@ import {
   buildCompanionMessages,
   updateCompanionAfterReply,
   findNameMentionedUsers,
+  buildRecentChannelContext,
 } from "../companion.js";
 
 export async function handleAiCommand(client, msg, prompt) {
@@ -26,13 +27,22 @@ export async function handleAiCommand(client, msg, prompt) {
 
   const mentionedUsers = [...explicitMentions, ...nameMentioned];
 
+  // ALSO fetch what's actually being said in the channel right now --
+  // this is what lets the bot understand a topic involving OTHER
+  // members talking to each other, not just long-term profiles. See
+  // buildRecentChannelContext for why this is fetched fresh instead of stored.
+  const recentContext = await buildRecentChannelContext(msg);
+
   // Context now comes from companion memory (summary + facts + 1 last
-  // turn), NOT 5 raw Q&A pairs like before. This is what makes the
-  // payload to Gemini far more token-efficient even with a very long chat history.
+  // turn) plus this real-time channel snapshot, NOT 5 raw Q&A pairs
+  // like before. This is what makes the payload to Gemini far more
+  // token-efficient even with a very long chat history, while still
+  // giving it situational awareness of the ongoing conversation.
   const { messages, state } = await buildCompanionMessages(
     msg.author.id,
     prompt,
-    mentionedUsers
+    mentionedUsers,
+    recentContext
   );
 
   const thinkingMessage = await msg.reply(`${BOT_NAME} is thinking...`);

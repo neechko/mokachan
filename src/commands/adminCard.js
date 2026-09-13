@@ -1,9 +1,9 @@
 import { OWNER_ID, BOT_NAME } from "../config.js";
 import {
-  fetchRandomCharacterWithRetry,
-  searchCharacterByName,
+  fetchRandomCharacterAnySource,
+  searchCharacterAnySource,
   RARITY_LABEL,
-} from "../anilist.js";
+} from "../characterSource.js";
 import { grantCharacterDirectly } from "../database.js";
 
 // Owner-only command. Grants a character card directly into a
@@ -38,14 +38,14 @@ export async function handleAdminCardCommand(msg, rawArgs) {
   const searchTerm = (rawArgs || "").replace(/<@!?\d+>/g, "").trim();
 
   const character = searchTerm
-    ? await searchCharacterByName(searchTerm)
-    : await fetchRandomCharacterWithRetry();
+    ? await searchCharacterAnySource(searchTerm)
+    : await fetchRandomCharacterAnySource();
 
   if (!character) {
     return msg.reply(
       searchTerm
-        ? `No character found on AniList matching "${searchTerm}".`
-        : "Failed to fetch a character from AniList. Try again shortly."
+        ? `No character found matching "${searchTerm}" on any connected source (AniList, Jikan).`
+        : "Failed to fetch a character from any connected source (AniList, Jikan). Try again shortly."
     );
   }
 
@@ -56,7 +56,7 @@ export async function handleAdminCardCommand(msg, rawArgs) {
 
   return msg.reply(
     `Granted directly to ${isSelf ? "your" : `${targetUser.username}'s`} collection: **${character.name}** ${label}\n` +
-      `From: *${character.series}*\n` +
+      `From: *${character.series}* (source: ${character.source})\n` +
       `(${BOT_NAME} admin card, not a normal spawn/claim)`
   );
 }

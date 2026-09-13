@@ -20,6 +20,9 @@ import {
   SUMMARY_EVERY_N_TURNS,
   MAX_FACTS,
   AFFECTION_PER_TURN,
+  PREFIX,
+  RECENT_CONTEXT_MESSAGE_COUNT,
+  RECENT_CONTEXT_TRIM_CHARS,
 } from "./config.js";
 import {
   getOrCreateCompanion,
@@ -92,6 +95,51 @@ Other members mentioned in this message -- here's what you remember about them (
 ${blocks.join("\n\n")}`;
 }
 
+// Fetches the ACTUAL recent conversation happening in this channel,
+// fresh, right now -- this is what lets the bot understand a topic
+// involving other members talking to each other (e.g. two other
+// people just discussed something, then someone asks mokachan about
+// it). Deliberately NOT stored anywhere (unlike companion_memory,
+// which is a slow-updating per-user summary) -- purely ephemeral
+// situational awareness for this one request. Cheaper and far more
+// reliable than trying to programmatically resolve pronouns/references
+// ourselves: the model can just read the actual conversation the same
+// way a person would.
+export async function buildRecentChannelContext(msg) {
+  if (!msg.channel?.messages?.fetch) return "";
+
+  try {
+    const fetched = await msg.channel.messages.fetch({
+      limit: RECENT_CONTEXT_MESSAGE_COUNT + 1,
+    });
+
+    const lines = [...fetched.values()]
+      .reverse() // oldest first, matching natural reading order
+      .filter((m) => m.id !== msg.id) // don't duplicate the current prompt, it's added separately
+      .filter((m) => !m.author.bot)
+      .filter(
+        (m) => !m.content.trim().toLowerCase().startsWith(PREFIX.toLowerCase())
+      )
+      .map((m) => {
+        const content = m.content.trim().slice(0, RECENT_CONTEXT_TRIM_CHARS);
+        if (!content) return null;
+        const displayName = m.member?.displayName || m.author.username;
+        return `${displayName}: ${content}`;
+      })
+      .filter(Boolean);
+
+    if (!lines.length) return "";
+
+    return `
+
+Recent conversation in this channel (for situational context only -- most recent last; this may be members talking to EACH OTHER, not necessarily to you, but you can reference it naturally if relevant):
+${lines.join("\n")}`;
+  } catch (error) {
+    console.error("Failed to fetch recent channel context:", error.message);
+    return "";
+  }
+}
+
 // Escapes regex special characters so a name containing dots or odd
 // punctuation doesn't break the regex or cause a wrong match.
 function escapeRegex(str) {
@@ -123,14 +171,14 @@ export async function findNameMentionedUsers(msg, promptText, excludeIds = new S
   for (const id of candidates) {
     try {
       let username = null;
-      let nickname = null;
+      let discordNickname = null;
       let user = null;
 
       if (msg.guild) {
         const member = await msg.guild.members.fetch(id).catch(() => null);
         if (!member) continue; // left the server / fetch failed, skip
         username = member.user.username;
-        nickname = member.nickname;
+        discordNickname = member.nickname;
         user = member.user;
       } else {
         user = await msg.client.users.fetch(id).catch(() => null);
@@ -138,7 +186,16 @@ export async function findNameMentionedUsers(msg, promptText, excludeIds = new S
         username = user.username;
       }
 
-      const namesToCheck = [username, nickname].filter(
+      // ALSO check the nickname the BOT ITSELF assigned this person
+      // (companion_memory.nickname) -- this can be completely
+      // different from their real Discord username/nickname, e.g. the
+      // bot might call someone "Bud" even if their Discord name is
+      // "budi_ganteng123". Missing this was a real gap: someone saying
+      // "gimana kabar Bud" wouldn't have matched before.
+      const companionInfo = await getCompanionPublicInfo(id);
+      const botNickname = companionInfo?.nickname || null;
+
+      const namesToCheck = [username, discordNickname, botNickname].filter(
         (name) => name && name.length >= 3
       );
 
@@ -157,7 +214,7 @@ export async function findNameMentionedUsers(msg, promptText, excludeIds = new S
 }
 
 // Builds the `messages` array ready to send to callGemini().
-export async function buildCompanionMessages(userId, prompt, mentionedUsers = []) {
+export async function buildCompanionMessages(userId, prompt, mentionedUsers = [], recentContext = "") {
   const state = await getOrCreateCompanion(userId);
   const facts = safeParseFacts(state.facts);
   const mentionedContext = await buildMentionedMembersContext(
@@ -190,6 +247,7 @@ ${state.summary ? state.summary : "(belum ada, ini termasuk interaksi awal kalia
 Hal-hal yang kamu ingat tentang user ini:
 ${facts.length ? facts.map((f) => `- ${f}`).join("\n") : "(belum ada catatan khusus)"}
 ${mentionedContext}
+${recentContext}
   `.trim();
 
   const messages = [{ role: "system", content: systemContent }];
