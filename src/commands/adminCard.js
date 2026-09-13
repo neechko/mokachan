@@ -44,8 +44,8 @@ export async function handleAdminCardCommand(msg, rawArgs) {
   if (!character) {
     return msg.reply(
       searchTerm
-        ? `No character found matching "${searchTerm}" on any connected source (AniList, Jikan).`
-        : "Failed to fetch a character from any connected source (AniList, Jikan). Try again shortly."
+        ? `No character found matching "${searchTerm}" on any connected source (AniList, Tenrai, Genshin).`
+        : "Failed to fetch a character from any connected source (AniList, Tenrai, Genshin). Try again shortly."
     );
   }
 
