@@ -2,9 +2,17 @@ import { OWNER_ID, BOT_NAME } from "../config.js";
 import {
   fetchRandomCharacterAnySource,
   searchCharacterAnySource,
+  searchCharacterFromSource,
+  SOURCE_NAMES,
   RARITY_LABEL,
 } from "../characterSource.js";
 import { grantCharacterDirectly } from "../database.js";
+
+// Matches an explicit "source:name" search prefix, e.g. "genshin:Odette"
+// -> source "genshin", name "Odette". Case-insensitive on the source
+// name. If this doesn't match, the whole string is treated as a plain
+// name search across all sources (existing behaviour).
+const EXPLICIT_SOURCE_PATTERN = /^([a-z]+):(.+)$/i;
 
 // Owner-only command. Grants a character card directly into a
 // collection, bypassing the normal spawn/claim flow entirely.
@@ -14,6 +22,11 @@ import { grantCharacterDirectly } from "../database.js";
 //   madmincard <name>                 -> specific character, granted to yourself
 //   madmincard @member                -> random character, granted to @member
 //   madmincard @member <name>         -> specific character, granted to @member
+//   madmincard <source>:<name>        -> specific character from ONE named
+//                                         source only, no fallback to others
+//                                         (e.g. "genshin:Odette") -- use this
+//                                         when a name might collide across
+//                                         sources and you need the exact one
 //
 // Restricted to OWNER_ID specifically (not just server "Manage Server"
 // permission), since this directly writes to the database rather than
@@ -37,15 +50,43 @@ export async function handleAdminCardCommand(msg, rawArgs) {
   // "madmincard @Budi Naruto Uzumaki" -> searchTerm = "Naruto Uzumaki"
   const searchTerm = (rawArgs || "").replace(/<@!?\d+>/g, "").trim();
 
-  const character = searchTerm
-    ? await searchCharacterAnySource(searchTerm)
-    : await fetchRandomCharacterAnySource();
+  // Check for an explicit "source:name" prefix first (e.g.
+  // "genshin:Odette") so a name that might match on more than one
+  // source resolves to the one actually intended, instead of whichever
+  // source happens to win the random ordering.
+  const explicitMatch = searchTerm.match(EXPLICIT_SOURCE_PATTERN);
+
+  let character;
+  let sourceOnlyLabel = null; // set when an explicit source was requested, for error messages
+
+  if (explicitMatch) {
+    const [, requestedSource, nameOnly] = explicitMatch;
+    sourceOnlyLabel = requestedSource.toLowerCase();
+    const result = await searchCharacterFromSource(sourceOnlyLabel, nameOnly.trim());
+
+    if (result?.error === "unknown_source") {
+      return msg.reply(
+        `Unknown source "${requestedSource}". Available sources: ${SOURCE_NAMES.join(", ")}.`
+      );
+    }
+
+    character = result;
+  } else if (searchTerm) {
+    character = await searchCharacterAnySource(searchTerm);
+  } else {
+    character = await fetchRandomCharacterAnySource();
+  }
 
   if (!character) {
+    if (sourceOnlyLabel) {
+      return msg.reply(
+        `No character found matching that name specifically on source "${sourceOnlyLabel}".`
+      );
+    }
     return msg.reply(
       searchTerm
-        ? `No character found matching "${searchTerm}" on any connected source (AniList, Tenrai, Genshin).`
-        : "Failed to fetch a character from any connected source (AniList, Tenrai, Genshin). Try again shortly."
+        ? `No character found matching "${searchTerm}" on any connected source (${SOURCE_NAMES.join(", ")}).`
+        : `Failed to fetch a character from any connected source (${SOURCE_NAMES.join(", ")}). Try again shortly.`
     );
   }
 

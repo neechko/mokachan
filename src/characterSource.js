@@ -94,3 +94,30 @@ export async function searchCharacterAnySource(name) {
 
   return null;
 }
+
+// Names of all configured sources, for validating an explicit
+// "source:name" search request (see searchCharacterFromSource) and for
+// building helpful error messages elsewhere.
+export const SOURCE_NAMES = SOURCES.map((source) => source.name);
+
+// Searches exactly ONE named source, with NO fallback to the others.
+// This exists for cases where a caller specifically wants a character
+// from a particular source (e.g. a known game character that might
+// also coincidentally match an unrelated anime character on another
+// source) -- searchCharacterAnySource can't guarantee which source's
+// match wins when more than one has a hit for the same name.
+//
+// Returns { error: "unknown_source" } if sourceName doesn't match any
+// configured source, or the character (or null if that one source has
+// no match) otherwise.
+export async function searchCharacterFromSource(sourceName, name) {
+  const source = SOURCES.find(
+    (candidate) => candidate.name === sourceName.toLowerCase()
+  );
+
+  if (!source) {
+    return { error: "unknown_source" };
+  }
+
+  return source.search(name);
+}
