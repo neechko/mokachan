@@ -1,7 +1,7 @@
 // genshin.dev API (hosted at genshin.jmp.blue) as a THIRD character
 // source alongside AniList and Tenrai. Unlike those two, this pulls
 // from a single game (Genshin Impact) rather than a general
-// anime/manga database -- see characterSource.js for how all three
+// anime/manga database -- see characterSource.js for how all sources
 // are combined.
 //
 // Mirrors anilist.js / tenrai.js's exported interface (fetchRandomCharacter,
@@ -33,7 +33,18 @@
 //    (`/characters/:id/card`), which returns the image bytes directly
 //    -- so the URL itself works as-is anywhere an image URL is needed
 //    (e.g. Discord embed image fields), same as AniList/Tenrai's URLs.
+//
+// 6. `source` is always "genshin" here, even though genshindb.js (a
+//    second, independent API for this exact same character roster) is
+//    grouped alongside this file in characterSource.js -- both report
+//    `source: "genshin"` so that claim dedup keyed on
+//    (source, anilistId) treats the same in-game character as the same
+//    claim regardless of which of the two APIs actually served it. The
+//    `provider` field below preserves which literal API answered, for
+//    logging/debugging, without affecting that dedup key. See
+//    genshinSlug.js and genshindb.js for the other half of this.
 import { RARITY_LABEL } from "./rarity.js";
+import { toSlug } from "./genshinSlug.js";
 
 export { RARITY_LABEL };
 
@@ -146,7 +157,11 @@ function mapCharacter(id, character) {
     series: "Genshin Impact",
     mediaType: "GAME",
     rarity: tierFromStars(stars),
+    // See point 6 in the file header: "source" is the shared pool
+    // identity (same value as genshindb.js), "provider" is which API
+    // literally answered this particular request.
     source: "genshin",
+    provider: "genshin",
   };
 }
 
@@ -212,16 +227,6 @@ export async function fetchRandomCharacterWithRetry(maxAttempts = 3) {
   }
 
   return null;
-}
-
-// Turns a display name into this API's slug format, e.g.
-// "Hu Tao" -> "hu-tao", "Kamisato Ayaka" -> "kamisato-ayaka".
-function toSlug(name) {
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-");
 }
 
 // Looks up ONE specific character by name. Used by the owner-only
