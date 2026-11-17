@@ -7,6 +7,9 @@ dotenv.config();
 export const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 export const NOTIFY_CHANNEL_ID = process.env.CHANNEL_ID;
 
+// ==================== DEBUGGING ====================
+export const DEBUG_MODE = process.env.DEBUG_MODE === "true";
+
 export const BOT_NAME = process.env.BOT_NAME || "mokachan";
 export const PREFIX = process.env.COMMAND_PREFIX || "m";
 export const COMMAND_CASE_INSENSITIVE =
@@ -211,6 +214,8 @@ export const COMMANDS = {
   setSpawnChannel: process.env.CMD_SETSPAWNCHANNEL || "setspawnchannel",
   admincard: process.env.CMD_ADMINCARD || "admincard",
 };
+
+export const TAVILY_API_KEY = process.env.TAVILY_API_KEY || "";
 
 // ==================== VALIDATION ====================
 

@@ -1,19 +1,4 @@
 // ==================== COMPANION MEMORY ====================
-// Replaces the old mechanism: sending 5 raw Q&A pairs on every request
-// (token-expensive, payload grows with chat length).
-//
-// Now every request to Gemini only carries:
-//   1. System prompt persona + closeness level (affection)
-//   2. A short SUMMARY produced by the AI itself (not raw history)
-//   3. A handful of short "facts" about the user (name, likes/dislikes, etc.)
-//   4. ONE last turn (to keep the conversation feeling natural/connected)
-//   5. The new prompt
-//
-// The summary and facts are only REGENERATED every SUMMARY_EVERY_N_TURNS
-// (via a single small Gemini call), not on every message. So token cost
-// per ordinary message stays roughly constant instead of growing with
-// chat history length.
-
 import {
   BOT_NAME,
   TRIM_CHARS,
@@ -34,10 +19,6 @@ import {
 } from "./database.js";
 import { callGemini } from "./gemini.js";
 
-// NOTE: this label gets embedded directly into the Indonesian-language
-// AI persona prompt below (systemContent), so it's intentionally kept
-// in Indonesian too -- mixing languages inside a single prompt sent to
-// the model would be inconsistent and could confuse it.
 function affectionLabel(points) {
   if (points >= 150) return "sangat dekat, akrab seperti sahabat lama";
   if (points >= 60) return "sudah akrab dan nyaman ngobrol santai";
@@ -54,13 +35,6 @@ function safeParseFacts(raw) {
   }
 }
 
-// Fetch the summary + facts belonging to OTHER members mentioned in
-// the message, so the AI can naturally chime in/comment about them
-// too -- this is what makes the bot feel like it knows everyone on the
-// server, not just whoever it's currently talking to. Deliberately
-// only uses the summary & facts (not that member's raw chat transcript)
-// to stay token-efficient and avoid leaking their private conversation
-// verbatim.
 async function buildMentionedMembersContext(mentionedUsers) {
   if (!mentionedUsers.length) return "";
 
@@ -95,16 +69,6 @@ Other members mentioned in this message -- here's what you remember about them (
 ${blocks.join("\n\n")}`;
 }
 
-// Fetches the ACTUAL recent conversation happening in this channel,
-// fresh, right now -- this is what lets the bot understand a topic
-// involving other members talking to each other (e.g. two other
-// people just discussed something, then someone asks mokachan about
-// it). Deliberately NOT stored anywhere (unlike companion_memory,
-// which is a slow-updating per-user summary) -- purely ephemeral
-// situational awareness for this one request. Cheaper and far more
-// reliable than trying to programmatically resolve pronouns/references
-// ourselves: the model can just read the actual conversation the same
-// way a person would.
 export async function buildRecentChannelContext(msg) {
   if (!msg.channel?.messages?.fetch) return "";
 
@@ -114,8 +78,8 @@ export async function buildRecentChannelContext(msg) {
     });
 
     const lines = [...fetched.values()]
-      .reverse() // oldest first, matching natural reading order
-      .filter((m) => m.id !== msg.id) // don't duplicate the current prompt, it's added separately
+      .reverse() 
+      .filter((m) => m.id !== msg.id) 
       .filter((m) => !m.author.bot)
       .filter(
         (m) => !m.content.trim().toLowerCase().startsWith(PREFIX.toLowerCase())
@@ -140,24 +104,10 @@ ${lines.join("\n")}`;
   }
 }
 
-// Escapes regex special characters so a name containing dots or odd
-// punctuation doesn't break the regex or cause a wrong match.
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// Detects a member mentioned by PLAIN NAME in a sentence (without an
-// @mention), e.g. "how's Budi doing today". Only checked against users
-// who have ALREADY chatted with the bot before (present in
-// companion_memory) -- besides being cheaper (no need to scan every
-// server member), a member who's never chatted has nothing to tell
-// anyway.
-//
-// Matched against the Discord username OR that server's nickname (if
-// the message came from a guild), using a case-insensitive word
-// boundary. Names of only 1-2 characters are deliberately skipped so
-// they don't false-trigger on unrelated words (e.g. a name like "Al"
-// matching inside some other word).
 export async function findNameMentionedUsers(msg, promptText, excludeIds = new Set()) {
   if (!promptText) return [];
 
@@ -176,7 +126,7 @@ export async function findNameMentionedUsers(msg, promptText, excludeIds = new S
 
       if (msg.guild) {
         const member = await msg.guild.members.fetch(id).catch(() => null);
-        if (!member) continue; // left the server / fetch failed, skip
+        if (!member) continue; 
         username = member.user.username;
         discordNickname = member.nickname;
         user = member.user;
@@ -186,12 +136,6 @@ export async function findNameMentionedUsers(msg, promptText, excludeIds = new S
         username = user.username;
       }
 
-      // ALSO check the nickname the BOT ITSELF assigned this person
-      // (companion_memory.nickname) -- this can be completely
-      // different from their real Discord username/nickname, e.g. the
-      // bot might call someone "Bud" even if their Discord name is
-      // "budi_ganteng123". Missing this was a real gap: someone saying
-      // "gimana kabar Bud" wouldn't have matched before.
       const companionInfo = await getCompanionPublicInfo(id);
       const botNickname = companionInfo?.nickname || null;
 
@@ -213,7 +157,6 @@ export async function findNameMentionedUsers(msg, promptText, excludeIds = new S
   return found;
 }
 
-// Builds the `messages` array ready to send to callGemini().
 export async function buildCompanionMessages(userId, prompt, mentionedUsers = [], recentContext = "") {
   const state = await getOrCreateCompanion(userId);
   const facts = safeParseFacts(state.facts);
@@ -221,28 +164,55 @@ export async function buildCompanionMessages(userId, prompt, mentionedUsers = []
     mentionedUsers.filter((u) => u.id !== userId)
   );
 
+  const today = new Date();
+  const currentYear = today.getFullYear();
+  const currentDate = today.toLocaleDateString('id-ID', { 
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+  });
+
   const systemContent = `
-Kamu adalah ${BOT_NAME}.
-
-Nama kamu adalah ${BOT_NAME}.
-Kamu adalah AI Discord yang ramah, sopan,
-informatif, santai, dan natural.
-
-Gunakan bahasa Indonesia jika pengguna
-berbicara menggunakan bahasa Indonesia.
-
-Jawab dengan jelas dan jangan terlalu
-panjang kecuali pengguna meminta penjelasan detail.
+Kamu adalah ${BOT_NAME}, AI Discord yang cerdas, empatik, dan sangat membantu.
+Karaktarmu beradaptasi secara dinamis berdasarkan tingkat kedekatan (afeksi) dengan user.
 
 ---
+[PEDOMAN BERPIKIR & MENJAWAB - PENTING]
+1. Analisis Maksud: Pahami apa yang sebenarnya diinginkan user.
+2. Format Discord (WAJIB DITAATI):
+   - Gunakan **bold** untuk poin penting atau penekanan.
+   - Gunakan \`code\` untuk istilah teknis, perintah, atau nama file.
+   - Gunakan list (- atau 1.) untuk penjelasan bertahap.
+   - Gunakan blockquote (>) untuk kutipan atau konteks tambahan.
+   - **JANGAN PERNAH menggunakan Tabel Markdown (|---|---|)** karena tampilannya hancur di Discord. Selalu gunakan List/Bullet points sebagai gantinya.
+   - **JANGAN gunakan simbol # untuk heading** (#, ##, ###). Gunakan **TEKS TEBAL** atau HURUF KAPITAL sebagai pemisah bagian.
+3. Kejujuran Intelektual: JANGAN pernah mengarang fakta (halusinasi).
+4. Anti-Klise: JANGAN mulai jawaban dengan "Tentu!", "Sebagai AI...", "Baiklah...". Langsung masuk ke inti.
+5. Proaktivitas: Tawarkan langkah selanjutnya atau ajukan pertanyaan pemantik.
 
-Konteks tambahan tentang user ini (gunakan diam-diam, jangan disebut ulang secara eksplisit):
+[EFEKTIVITAS & PENGHEMATAN TOKEN]
+- Jika user menanyakan hal yang SAMA PERSIS atau sangat mirip dengan pertanyaan mereka sebelumnya (yang sudah ada di riwayat obrolan terakhir), JANGAN panggil 'search_web' lagi. 
+- Cukup rujuk jawaban terakhirmu, atau tanya apa yang kurang dari jawaban sebelumnya. Jangan memboroskan pencarian web untuk pertanyaan yang baru saja dijawab.
 
-Tingkat kedekatanmu dengan user ini: ${affectionLabel(state.affection)} (poin kedekatan: ${state.affection}).
-${state.nickname ? `Kamu biasa memanggil user ini dengan sebutan "${state.nickname}".` : ""}
+[GAYA BICARA & PERSONA]
+- Bahasa: Natural, santai, terstruktur, dan informatif.
+- Adaptasi Afeksi:
+  * Afeksi Rendah: Sopan, helpful, profesional namun hangat.
+  * Afeksi Tinggi: Lebih santai, ekspresif, boleh bercanda.
 
-Ringkasan hubungan & obrolan kalian sejauh ini (rangkuman, bukan transkrip lengkap):
-${state.summary ? state.summary : "(belum ada, ini termasuk interaksi awal kalian)"}
+[KONTEKS WAKTU]
+Hari ini adalah ${currentDate} (Tahun ${currentYear}). 
+
+[ATURAN PENCARIAN WEB (search_web)]
+Gunakan alat ini HANYA JIKA user menanyakan berita terkini, info real-time, atau fakta terbaru yang tidak kamu ketahui.
+JANGAN gunakan untuk obrolan santai atau pertanyaan yang sudah kamu ketahui.
+Jika menggunakan hasil web, rangkum dengan format List (bukan tabel) dan sertakan sumbernya.
+---
+
+[KONTEKS MEMORI USER - RAHASIA]
+Tingkat kedekatanmu dengan user ini: ${affectionLabel(state.affection)} (poin: ${state.affection}).
+${state.nickname ? `Panggilan untuk user ini: "${state.nickname}".` : ""}
+
+Ringkasan hubungan & obrolan kalian:
+${state.summary ? state.summary : "(belum ada)"}
 
 Hal-hal yang kamu ingat tentang user ini:
 ${facts.length ? facts.map((f) => `- ${f}`).join("\n") : "(belum ada catatan khusus)"}
@@ -252,8 +222,6 @@ ${recentContext}
 
   const messages = [{ role: "system", content: systemContent }];
 
-  // Only carry the ONE most recent turn (not 5), since long-term
-  // context is already represented via the summary and facts above.
   if (state.last_prompt && state.last_response) {
     messages.push({
       role: "user",
@@ -270,14 +238,6 @@ ${recentContext}
   return { messages, state };
 }
 
-// Asks Gemini to re-summarize: old summary + new turn -> a new short
-// summary + short fact list. Only called occasionally (every
-// SUMMARY_EVERY_N_TURNS), not on every message.
-//
-// NOTE: the prompt content below is deliberately kept in Indonesian --
-// its output (summary/facts) gets embedded directly into the
-// Indonesian-language persona prompt in buildCompanionMessages above,
-// so keeping this consistent avoids mixing languages in what the model sees.
 async function regenerateSummary(state, prompt, reply) {
   const oldFacts = safeParseFacts(state.facts);
 
@@ -287,16 +247,11 @@ async function regenerateSummary(state, prompt, reply) {
       content: `
 Kamu adalah sistem PERINGKAS MEMORI untuk AI companion bernama ${BOT_NAME}.
 Tugasmu: gabungkan ringkasan lama + percakapan baru menjadi SATU ringkasan
-baru yang SANGAT SINGKAT (maksimal 4 kalimat), fokus ke hal yang penting
-untuk diingat jangka panjang (topik favorit, kepribadian user, running
-joke, hal yang sedang dihadapi user), BUKAN detail kecil yang tidak penting.
+baru yang SANGAT SINGKAT (maksimal 4 kalimat).
 
-Juga perbarui daftar "fakta" pendek tentang user (maks ${MAX_FACTS} item,
-tiap item singkat, misal "suka anime isekai", "sedang belajar coding",
-"panggilan kesukaan: kak").
+Juga perbarui daftar "fakta" pendek tentang user (maks ${MAX_FACTS} item).
 
-Balas HANYA dengan JSON valid, tanpa markdown, tanpa penjelasan tambahan,
-format persis:
+Balas HANYA dengan JSON valid, tanpa markdown, format persis:
 {"summary": "...", "facts": ["...", "..."]}
       `.trim(),
     },
@@ -316,7 +271,7 @@ ${BOT_NAME}: ${reply}
     },
   ];
 
-  const outcome = await callGemini(summarizerMessages);
+  const outcome = await callGemini(summarizerMessages, { useTools: false });
   if (!outcome) return null;
 
   try {
@@ -338,8 +293,6 @@ ${BOT_NAME}: ${reply}
   }
 }
 
-// Called after the AI successfully replies. Updates affection, saves
-// the last turn, and (if it's time) regenerates the summary.
 export async function updateCompanionAfterReply(userId, state, prompt, reply) {
   const newAffection = Math.min(
     (state.affection || 0) + AFFECTION_PER_TURN,
@@ -383,9 +336,6 @@ export async function getCompanionProfile(userId) {
   };
 }
 
-// Read-only version to view ANOTHER member's profile (mprofil @user).
-// Returns null if that member has never chatted with mokachan at all --
-// so we don't create an empty companion_memory row just from being checked.
 export async function getCompanionPublicProfile(userId) {
   const info = await getCompanionPublicInfo(userId);
   if (!info) return null;
@@ -399,8 +349,5 @@ export async function getCompanionPublicProfile(userId) {
 
 export async function resetCompanionMemory(userId) {
   await resetCompanion(userId);
-  // Also clear any not-yet-processed passive chat buffer, so this
-  // reset is truly complete -- no leftover data that would later
-  // "revive" the old summary once the buffer fills up again.
   await clearPassiveBuffer(userId);
 }

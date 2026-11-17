@@ -9,12 +9,8 @@ import {
 } from "../companion.js";
 
 export async function handleAiCommand(client, msg, prompt) {
-  // If the user mentions another member in this message (e.g. "@Budi
-  // what's he usually up to") OR just says their plain name without an
-  // @mention (e.g. "how's Budi doing today"), the AI is given a
-  // summary/facts about that member too -- this is what makes the bot
-  // feel like it "knows" many people on the server, not just whoever
-  // it's currently chatting with.
+  // Jika user me-mention member lain atau menyebut nama mereka,
+  // AI akan diberi konteks ingatan tentang member tersebut.
   const explicitMentions = [...msg.mentions.users.values()].filter(
     (u) => u.id !== msg.author.id && u.id !== client.user.id
   );
@@ -27,17 +23,11 @@ export async function handleAiCommand(client, msg, prompt) {
 
   const mentionedUsers = [...explicitMentions, ...nameMentioned];
 
-  // ALSO fetch what's actually being said in the channel right now --
-  // this is what lets the bot understand a topic involving OTHER
-  // members talking to each other, not just long-term profiles. See
-  // buildRecentChannelContext for why this is fetched fresh instead of stored.
+  // Mengambil konteks obrolan real-time di channel agar AI nyambung.
   const recentContext = await buildRecentChannelContext(msg);
 
   // Context now comes from companion memory (summary + facts + 1 last
-  // turn) plus this real-time channel snapshot, NOT 5 raw Q&A pairs
-  // like before. This is what makes the payload to Gemini far more
-  // token-efficient even with a very long chat history, while still
-  // giving it situational awareness of the ongoing conversation.
+  // turn) plus this real-time channel snapshot.
   const { messages, state } = await buildCompanionMessages(
     msg.author.id,
     prompt,
@@ -47,15 +37,26 @@ export async function handleAiCommand(client, msg, prompt) {
 
   const thinkingMessage = await msg.reply(`${BOT_NAME} is thinking...`);
 
+  // Memanggil callGemini. Jika user bertanya info terkini, gemini.js akan 
+  // otomatis melakukan loop pencarian web di latar belakang sebelum mengembalikan hasil.
   const aiResponse = await callGemini(messages);
 
   if (!aiResponse) {
     return thinkingMessage.edit(
-      `${BOT_NAME} failed to get a response from Gemini.`
+      `${BOT_NAME} failed to get a response from AI Provider.`
     );
   }
 
   const { result, model } = aiResponse;
+
+  // === TAMBAHAN SAFEGUARD ===
+  // Cegah pengiriman pesan kosong jika AI berhasil memanggil tool (web search)
+  // tetapi gagal merangkai teks jawaban akhir (kadang terjadi pada model LLM).
+  if (!result || !result.trim()) {
+    return thinkingMessage.edit(
+      `${BOT_NAME} berhasil mencari informasi tetapi gagal merangkai jawaban akhir.`
+    );
+  }
 
   const finalText = `**${BOT_NAME}**\n` + `> Model: \`${model}\`\n\n` + result;
 
@@ -71,15 +72,9 @@ export async function handleAiCommand(client, msg, prompt) {
     await msg.channel.send(chunks[i]);
   }
 
-  // history.js / clearhistory.js still work as before (raw log for
-  // manual review via `mhistory`), BUT this is no longer the AI's
-  // context source -- that's companion memory's job above.
-  //
-  // IMPORTANT: this is wrapped in a SEPARATE try/catch from the AI
-  // reply above. The user already has their answer above -- if saving
-  // history/companion fails (e.g. disk full), they should not also get
-  // a confusing second error message when their actual answer already
-  // went through successfully.
+  // history.js / clearhistory.js still work as before.
+  // PENTING: Hanya 'prompt' asli user dan 'result' (jawaban final) yang disimpan.
+  // Raw data web search TIDAK masuk ke database, menjaga DB & token tetap bersih.
   try {
     await saveHistory(msg.author.id, prompt, result, model);
     // Update the companion's summary, facts, and affection points.

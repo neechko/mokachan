@@ -129,7 +129,10 @@ ${buffered.map((row) => `- ${row.content}`).join("\n")}
     },
   ];
 
-  const outcome = await callGemini(messages);
+  // PENTING: Tambahkan { useTools: false } agar AI tidak menggunakan web search
+  // saat merangkum chat pasif. Ini menjaga token tetap hemat, mencegah quota 
+  // Tavily terbuang sia-sia, dan mencegah kerusakan format JSON.
+  const outcome = await callGemini(messages, { useTools: false });
 
   // Apapun hasilnya, buffer yang sudah diproses TETAP dibersihkan --
   // supaya kalau Gemini lagi bermasalah, buffer tidak menumpuk selamanya.
@@ -156,7 +159,7 @@ ${buffered.map((row) => `- ${row.content}`).join("\n")}
       ),
     });
   } catch (error) {
-    console.error("⚠️ Gagal parse hasil belajar pasif:", error.message);
+    console.error("Gagal parse hasil belajar pasif:", error.message);
   }
 
   await clearPassiveBuffer(userId, lastId);
