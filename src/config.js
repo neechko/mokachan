@@ -36,45 +36,98 @@ export const TRIM_CHARS = parseInt(process.env.TRIM_CHARS, 10) || 700;
 export const MAX_OUTPUT_CHARS =
   parseInt(process.env.MAX_OUTPUT_CHARS, 10) || 1800;
 
-// ==================== GEMINI ====================
+// ==================== AI PROVIDER (universal, OpenAI-compatible) ====================
+//
+// Semua provider di bawah ini kompatibel dengan format "OpenAI Chat
+// Completions" -- cukup ubah 3 baris .env (AI_ENDPOINT, AI_API_KEY,
+// AI_MODELS) tanpa menyentuh file .js sama sekali:
+//
+//   NVIDIA Nemotron:
+//     AI_ENDPOINT=https://integrate.api.nvidia.com/v1/chat/completions
+//     AI_API_KEY=nvapi-xxxx
+//     AI_MODELS=nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3-nano-30b-a3b
+//
+//   OpenAI:
+//     AI_ENDPOINT=https://api.openai.com/v1/chat/completions
+//     AI_API_KEY=sk-xxxx
+//     AI_MODELS=gpt-4o,gpt-4o-mini
+//
+//   Groq:
+//     AI_ENDPOINT=https://api.groq.com/openai/v1/chat/completions
+//     AI_API_KEY=gsk_xxxx
+//     AI_MODELS=llama-3.3-70b-versatile,llama-3.1-8b-instant
+//
+//   DeepSeek:
+//     AI_ENDPOINT=https://api.deepseek.com/v1/chat/completions
+//     AI_API_KEY=sk-xxxx
+//     AI_MODELS=deepseek-chat,deepseek-reasoner
+//
+//   OpenRouter:
+//     AI_ENDPOINT=https://openrouter.ai/api/v1/chat/completions
+//     AI_API_KEY=sk-or-v1-xxxx
+//     AI_MODELS=anthropic/claude-3.5-sonnet,google/gemini-2.5-flash
+//
+//   Gemini (lewat endpoint OpenAI-compat):
+//     AI_ENDPOINT=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+//     AI_API_KEY=AIzaSy...
+//     AI_MODELS=gemini-2.5-flash,gemini-2.5-flash-lite
 
-export const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+// Endpoint -- kalau kosong, fallback ke NVIDIA agar bot tetap nyala.
+export const AI_ENDPOINT =
+  process.env.AI_ENDPOINT ||
+  "https://integrate.api.nvidia.com/v1/chat/completions";
 
-// Comma-separated model list, tried IN ORDER left to right. If the
-// first model is rate-limited/fails, automatically moves on to the
-// next. Example .env: GEMINI_MODELS=gemini-3.5-flash,gemini-3.5-flash-lite
-// GEMINI_MODEL (singular, legacy name) is still supported for compatibility.
-export const GEMINI_MODELS = (
+// API key. Prioritas: AI_API_KEY → GEMINI_API_KEY (kompatibel .env lama).
+export const AI_API_KEY =
+  process.env.AI_API_KEY || process.env.GEMINI_API_KEY;
+
+// Daftar model, dipisah koma, dicoba dari kiri ke kanan.
+// Prioritas: AI_MODELS → GEMINI_MODELS → GEMINI_MODEL (legacy).
+export const AI_MODELS = (
+  process.env.AI_MODELS ||
   process.env.GEMINI_MODELS ||
   process.env.GEMINI_MODEL ||
-  "gemini-3.5-flash,gemini-3.5-flash-lite"
+  "nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3-nano-30b-a3b"
 )
   .split(",")
-  .map((model) => model.trim())
+  .map((m) => m.trim())
   .filter(Boolean);
 
-// Retry PER MODEL, only for transient errors (network error / 5xx).
-// 429 is never retried on the same model (see gemini.js).
-export const GEMINI_MAX_RETRIES =
-  parseInt(process.env.GEMINI_MAX_RETRIES, 10) || 3;
+// Retry PER MODEL, hanya untuk error transient (network / 5xx).
+// 429 tidak di-retry di model yang sama (langsung fallback).
+export const AI_MAX_RETRIES =
+  parseInt(process.env.AI_MAX_RETRIES, 10) ||
+  parseInt(process.env.GEMINI_MAX_RETRIES, 10) ||
+  3;
 
-export const GEMINI_RETRY_DELAY =
-  parseInt(process.env.GEMINI_RETRY_DELAY, 10) || 2000;
+export const AI_RETRY_DELAY =
+  parseInt(process.env.AI_RETRY_DELAY, 10) ||
+  parseInt(process.env.GEMINI_RETRY_DELAY, 10) ||
+  2000;
 
-// HARD cap on the number of Gemini requests actually sent for ONE
-// callGemini() call, counted across ALL models + retries combined.
-// This is the main safety brake: no matter how many GEMINI_MODELS are
-// configured (e.g. 10), total API requests per user message stay
-// capped at this number.
-export const GEMINI_MAX_TOTAL_ATTEMPTS =
-  parseInt(process.env.GEMINI_MAX_TOTAL_ATTEMPTS, 10) || 6;
+// Batas keras jumlah request aktual untuk SATU callGemini(),
+// dihitung di semua model + retry. Ini rem utama: berapa pun
+// panjang AI_MODELS, total request per pesan user dibatasi ini.
+export const AI_MAX_TOTAL_ATTEMPTS =
+  parseInt(process.env.AI_MAX_TOTAL_ATTEMPTS, 10) ||
+  parseInt(process.env.GEMINI_MAX_TOTAL_ATTEMPTS, 10) ||
+  6;
 
-// After a model gets a 429, it is "rested" for this many ms and won't
-// be tried again (even from a different user's message) until the
-// cooldown expires. Prevents the bot from continuously hammering a
-// model that's already clearly rate-limited.
-export const GEMINI_MODEL_COOLDOWN_MS =
-  parseInt(process.env.GEMINI_MODEL_COOLDOWN_MS, 10) || 60000;
+// Setelah 429, model "diistirahatkan" selama ini (ms) dan tidak
+// dipakai lagi (bahkan dari user lain) sampai cooldown habis.
+export const AI_MODEL_COOLDOWN_MS =
+  parseInt(process.env.AI_MODEL_COOLDOWN_MS, 10) ||
+  parseInt(process.env.GEMINI_MODEL_COOLDOWN_MS, 10) ||
+  60000;
+
+// ---- Alias kompatibilitas: agar gemini.js & file lama tetap jalan ----
+// Semua nama GEMINI_* sekarang menunjuk ke nilai AI_* di atas.
+export const GEMINI_API_KEY            = AI_API_KEY;
+export const GEMINI_MODELS             = AI_MODELS;
+export const GEMINI_MAX_RETRIES        = AI_MAX_RETRIES;
+export const GEMINI_RETRY_DELAY        = AI_RETRY_DELAY;
+export const GEMINI_MAX_TOTAL_ATTEMPTS = AI_MAX_TOTAL_ATTEMPTS;
+export const GEMINI_MODEL_COOLDOWN_MS  = AI_MODEL_COOLDOWN_MS;
 
 // ==================== COMPANION MEMORY (rolling summary) ====================
 // Replaces the old "resend N raw history messages on every request"
@@ -167,8 +220,21 @@ export function validateConfig() {
     process.exit(1);
   }
 
-  if (!GEMINI_API_KEY) {
-    console.error("GEMINI_API_KEY is not set.");
+  if (!AI_API_KEY) {
+    console.error(
+      "AI_API_KEY (atau GEMINI_API_KEY) is not set. " +
+        "Isi salah satunya di .env."
+    );
+    process.exit(1);
+  }
+
+  if (!AI_ENDPOINT) {
+    console.error("AI_ENDPOINT is not set.");
+    process.exit(1);
+  }
+
+  if (!AI_MODELS.length) {
+    console.error("AI_MODELS (atau GEMINI_MODELS) kosong / tidak valid.");
     process.exit(1);
   }
 }
