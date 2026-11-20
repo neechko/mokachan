@@ -1,92 +1,134 @@
-// Gives a real, direct measurement of what is taking up disk space in
-// the bot's working directory, instead of guessing. Useful because
-// panel-reported "disk size" numbers can be misleading (e.g. showing
-// allocated quota instead of actual usage), so this reads the real
-// filesystem directly.
-
-import fs from "node:fs/promises";
-import path from "node:path";
-import { getFreeDiskMB } from "../maintenance.js";
-import { getVacuumStatus } from "../database.js";
-
-const MAX_DEPTH = 2; // how many directory levels deep to report individually
-
-async function measureDir(dirPath, depth = 0) {
-  let total = 0;
-  const items = [];
-  let entries;
-
-  try {
-    entries = await fs.readdir(dirPath, { withFileTypes: true });
-  } catch {
-    return { total: 0, items: [] };
-  }
-
-  for (const entry of entries) {
-    const fullPath = path.join(dirPath, entry.name);
-
-    if (entry.isDirectory()) {
-      const sub = await measureDir(fullPath, depth + 1);
-      total += sub.total;
-      if (depth < MAX_DEPTH) {
-        items.push({ name: `${entry.name}/`, size: sub.total });
-      }
-    } else {
-      try {
-        const stat = await fs.stat(fullPath);
-        total += stat.size;
-        if (depth < MAX_DEPTH) {
-          items.push({ name: entry.name, size: stat.size });
-        }
-      } catch {
-        // file may have been deleted mid-scan, skip it
-      }
-    }
-  }
-
-  return { total, items };
-}
+import { EmbedBuilder } from "discord.js";
+import { statfs } from "node:fs/promises";
+import os from "node:os";
+import { BOT_NAME, OWNER_ID } from "../config.js";
+import { getDatabaseSizeBytes } from "../database.js";
 
 function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (!Number.isFinite(bytes)) return "-";
+
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex++;
+  }
+
+  const decimals = value >= 100 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(decimals)} ${units[unitIndex]}`;
+}
+
+function progressBar(percent, width = 12) {
+  const safePercent = Math.max(0, Math.min(100, percent));
+  const filled = Math.round((safePercent / 100) * width);
+  const empty = Math.max(0, width - filled);
+
+  return "█".repeat(filled) + "░".repeat(empty);
+}
+
+async function readDiskUsage(label, dir) {
+  try {
+    const stats = await statfs(dir);
+
+    const blockSize = Number(stats.bsize);
+    const total = Number(stats.blocks) * blockSize;
+    const free = Number(stats.bfree) * blockSize;
+    const available = Number(stats.bavail) * blockSize;
+    const used = Math.max(0, total - free);
+    const usedPercent = total > 0 ? (used / total) * 100 : 0;
+
+    return {
+      ok: true,
+      label,
+      dir,
+      total,
+      free,
+      available,
+      used,
+      usedPercent,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      label,
+      dir,
+      error: error.message,
+    };
+  }
 }
 
 export async function handleDiskUsageCommand(msg) {
-  const [{ total, items }, freeMB, vacuumStatus] = await Promise.all([
-    measureDir(process.cwd()),
-    getFreeDiskMB(),
-    getVacuumStatus().catch(() => null),
-  ]);
-
-  const sorted = items.sort((a, b) => b.size - a.size).slice(0, 15);
-  const lines = sorted.map(
-    (item) => `${formatBytes(item.size).padStart(10)}  ${item.name}`
-  );
-
-  const reportLines = [
-    `Working directory: ${process.cwd()}`,
-    `Total size: ${formatBytes(total)}`,
-    freeMB !== null ? `Free disk space (OS level): ${freeMB.toFixed(1)} MB` : "Free disk space: unavailable",
-    "",
-  ];
-
-  if (vacuumStatus) {
-    const dbSizeBytes = vacuumStatus.totalPages * vacuumStatus.pageSizeBytes;
-    const freeSpaceBytes = vacuumStatus.freePages * vacuumStatus.pageSizeBytes;
-    reportLines.push(
-      `Database file: ${formatBytes(dbSizeBytes)} total, ${formatBytes(freeSpaceBytes)} reclaimable (${vacuumStatus.freePages} free pages)`,
-      // persistedAutoVacuumMode reflects the REAL on-disk state (checked
-      // via a fresh connection), not just whatever the long-lived
-      // connection has set in memory -- the latter can show "incremental"
-      // even when it was never actually applied to an existing database.
-      `auto_vacuum mode: ${vacuumStatus.persistedAutoVacuumMode === 2 ? "incremental (active)" : "not incremental -- run the vacuum conversion command once to enable it"}`,
-      ""
-    );
+  // Kalau OWNER_ID diset, batasi command ini hanya untuk owner.
+  // Kalau OWNER_ID kosong, command bisa dipakai siapa saja.
+  if (OWNER_ID && msg.author.id !== OWNER_ID) {
+    return msg.reply("Command ini hanya untuk owner bot.");
   }
 
-  reportLines.push("Top items by size:", ...lines);
+  const targets = [
+    {
+      label: "Hosting / project",
+      dir: process.cwd(),
+    },
+    {
+      label: "Temp folder",
+      dir: os.tmpdir(),
+    },
+  ];
 
-  await msg.reply(`\`\`\`\n${reportLines.join("\n")}\n\`\`\``);
+  const disks = await Promise.all(
+    targets.map((target) => readDiskUsage(target.label, target.dir))
+  );
+
+  const embed = new EmbedBuilder()
+    .setTitle(`${BOT_NAME} — Disk Usage`)
+    .setColor(0x57f287)
+    .setTimestamp();
+
+  for (const disk of disks) {
+    if (!disk.ok) {
+      embed.addFields({
+        name: disk.label,
+        value: `Tidak bisa dibaca: ${disk.error}`,
+      });
+      continue;
+    }
+
+    const percent = disk.usedPercent;
+
+    embed.addFields({
+      name: `${disk.label} — ${percent.toFixed(1)}% used`,
+      value: [
+        `Path: \`${disk.dir}\``,
+        `Total: **${formatBytes(disk.total)}**`,
+        `Terpakai: **${formatBytes(disk.used)}**`,
+        `Tersedia: **${formatBytes(disk.available)}**`,
+        `${progressBar(percent)} ${percent.toFixed(1)}%`,
+      ].join("\n"),
+    });
+  }
+
+  try {
+    const neonBytes = await getDatabaseSizeBytes();
+
+    embed.addFields({
+      name: "Neon PostgreSQL",
+      value: [
+        `Ukuran database: **${formatBytes(neonBytes)}**`,
+        "Data bot sekarang disimpan di Neon, bukan di disk hosting.",
+      ].join("\n"),
+    });
+  } catch (error) {
+    embed.addFields({
+      name: "Neon PostgreSQL",
+      value: `Tidak bisa mengambil ukuran database: ${error.message}`,
+    });
+  }
+
+  embed.setFooter({
+    text: "Catatan: angka disk adalah filesystem yang terlihat proses. Kuota panel hosting bisa berbeda.",
+  });
+
+  return msg.reply({ embeds: [embed] });
 }

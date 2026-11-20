@@ -1,77 +1,82 @@
-import sqlite3 from "sqlite3";
-import { open } from "sqlite";
-import { stat, statfs } from "node:fs/promises";
+import postgres from "postgres";
 import { HISTORY_COUNT, HISTORY_RETAIN_COUNT } from "./config.js";
 
-let db;
+const DATABASE_URL = process.env.DATABASE_URL;
 
-// Filename used for both the main long-lived connection and any
-// short-lived probe connections opened to inspect on-disk state
-// without disturbing the main connection's in-memory pragma flags.
-const DB_FILENAME = "./mokachan_history.db";
+if (!DATABASE_URL) {
+  throw new Error(
+    "DATABASE_URL belum diset di .env. Isi dengan connection string Neon PostgreSQL."
+  );
+}
 
-// Require at least this many times the current .db file size in free
-// disk space before attempting a full VACUUM. A full VACUUM writes an
-// entire fresh copy of the database to a temp file before swapping it
-// in, so anything less than the file's own size guarantees failure --
-// this multiplier leaves headroom for that plus normal DB growth while
-// the (potentially slow) operation runs.
-const VACUUM_SAFETY_MULTIPLIER = 1.5;
+// Neon pooler/transaction mode lebih aman dengan prepare: false.
+const sql = postgres(DATABASE_URL, {
+  max: 5,
+  idle_timeout: 20,
+  connect_timeout: 10,
+  prepare: false,
+  ssl: "require",
+});
+
+// SQLite lama menyimpan timestamp sebagai TEXT ISO.
+// PostgreSQL mengembalikan Date object, jadi kita.normalkan ke ISO string
+// agar kode lama yang membaca created_at/updated_at tetap kompatibel.
+function iso(value) {
+  if (!value) return null;
+  return new Date(value).toISOString();
+}
+
+function toNumber(value, fallback = 0) {
+  if (value === null || value === undefined) return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// anilist_id di SQLite lama bisa angka, tapi ada juga custom string
+// seperti "wanderer" / "raiden-shogun". Neon menyimpannya sebagai TEXT.
+// Untuk kompatibilitas, angka tetap dikembalikan sebagai number.
+function normalizeAnilistId(value) {
+  if (value === null || value === undefined) return null;
+  const str = String(value);
+  return /^\d+$/.test(str) ? Number(str) : str;
+}
+
+function mapSpawn(row) {
+  if (!row) return row;
+  return {
+    ...row,
+    anilist_id: normalizeAnilistId(row.anilist_id),
+    last_spawn_at: iso(row.last_spawn_at),
+    spawned_at: iso(row.spawned_at),
+  };
+}
 
 export async function initDB() {
-  db = await open({
-    filename: DB_FILENAME,
-    driver: sqlite3.Database,
-  });
-
-  // Switch to incremental auto-vacuum. Without this, SQLite never
-  // returns space from deleted rows back to the OS until a full VACUUM
-  // runs, and a full VACUUM needs roughly as much temp disk space as
-  // the entire database file -- which can become impossible once disk
-  // is already tight. Incremental mode reclaims small chunks of free
-  // space continuously instead, avoiding that trap.
-  //
-  // Note: switching an EXISTING database into this mode still requires
-  // one successful full VACUUM to take effect -- this line alone is a
-  // no-op for a non-empty database until that happens. See
-  // convertToIncrementalVacuum() below for the guarded, one-time way
-  // to actually complete that conversion; call it manually (e.g. from
-  // an admin command) when disk space is healthy, not automatically
-  // here on every startup.
-  await db.exec("PRAGMA auto_vacuum = INCREMENTAL");
-
-  // Force SQLite to keep its internal scratch space (used for sorting,
-  // GROUP BY, subqueries, and VACUUM's temporary copy) entirely in
-  // memory instead of writing temp files to disk. This matters because
-  // many container hosts mount a small, separate filesystem for temp
-  // files (often /tmp, sometimes just a few dozen MB, sometimes RAM
-  // backed) that is completely different from the volume the main
-  // database file lives on -- so "plenty of free disk" reported by a
-  // hosting panel does not guarantee SQLite's temp storage has room.
-  // Our data volumes here are tiny (a personal Discord bot), so the
-  // memory cost of this is negligible.
-  await db.exec("PRAGMA temp_store = MEMORY");
-
-  await db.exec(`
+  await sql`
     CREATE TABLE IF NOT EXISTS history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id BIGSERIAL PRIMARY KEY,
       user_id TEXT,
       prompt TEXT,
       response TEXT,
-      created_at TEXT,
+      created_at TIMESTAMPTZ,
       model TEXT
     )
-  `);
+  `;
 
-  await db.exec(`
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_history_user_id_id
+    ON history (user_id, id DESC)
+  `;
+
+  await sql`
     CREATE TABLE IF NOT EXISTS model_usage_stats (
       model TEXT PRIMARY KEY,
       success_count INTEGER DEFAULT 0,
       fail_count INTEGER DEFAULT 0
     )
-  `);
+  `;
 
-  await db.exec(`
+  await sql`
     CREATE TABLE IF NOT EXISTS companion_memory (
       user_id TEXT PRIMARY KEY,
       nickname TEXT DEFAULT '',
@@ -81,72 +86,88 @@ export async function initDB() {
       last_prompt TEXT DEFAULT '',
       last_response TEXT DEFAULT '',
       turns_since_summary INTEGER DEFAULT 0,
-      updated_at TEXT
+      updated_at TIMESTAMPTZ
     )
-  `);
+  `;
 
-  await db.exec(`
+  await sql`
     CREATE TABLE IF NOT EXISTS channel_spawn (
       channel_id TEXT PRIMARY KEY,
-      last_spawn_at TEXT,
-      anilist_id INTEGER,
+      last_spawn_at TIMESTAMPTZ,
+      anilist_id TEXT,
       name TEXT,
       series TEXT,
       image_url TEXT,
       rarity TEXT,
-      spawned_at TEXT
+      spawned_at TIMESTAMPTZ
     )
-  `);
+  `;
 
-  await db.exec(`
+  await sql`
     CREATE TABLE IF NOT EXISTS character_claims (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id BIGSERIAL PRIMARY KEY,
       user_id TEXT,
-      anilist_id INTEGER,
+      anilist_id TEXT,
       name TEXT,
       series TEXT,
       image_url TEXT,
       rarity TEXT,
-      claimed_at TEXT
+      claimed_at TIMESTAMPTZ
     )
-  `);
+  `;
 
-  await db.exec(`
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_character_claims_user_id_id
+    ON character_claims (user_id, id DESC)
+  `;
+
+  await sql`
     CREATE TABLE IF NOT EXISTS bot_settings (
       key TEXT PRIMARY KEY,
       value TEXT
     )
-  `);
+  `;
 
-  await db.exec(`
+  await sql`
     CREATE TABLE IF NOT EXISTS passive_chat_buffer (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id BIGSERIAL PRIMARY KEY,
       user_id TEXT,
       content TEXT,
-      created_at TEXT
+      created_at TIMESTAMPTZ
     )
-  `);
+  `;
 
-  return db;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_passive_chat_buffer_user_id_id
+    ON passive_chat_buffer (user_id, id ASC)
+  `;
+
+  // Kompatibilitas dengan data lama:
+  // - anilist_id pernah INTEGER, tapi ada custom ID string.
+  // - bot_settings.value di SQLite bisa null.
+  await sql`ALTER TABLE character_claims ALTER COLUMN anilist_id TYPE TEXT`;
+  await sql`ALTER TABLE character_claims ALTER COLUMN anilist_id DROP NOT NULL`;
+  await sql`ALTER TABLE channel_spawn ALTER COLUMN anilist_id TYPE TEXT`;
+  await sql`ALTER TABLE bot_settings ALTER COLUMN value DROP NOT NULL`;
+
+  return sql;
 }
 
 // ==================== SETTINGS (simple key-value) ====================
 
 export async function getSetting(key) {
-  const row = await db.get(`SELECT value FROM bot_settings WHERE key = ?`, key);
-  return row?.value ?? null;
+  const rows = await sql`
+    SELECT value FROM bot_settings WHERE key = ${key}
+  `;
+  return rows[0]?.value ?? null;
 }
 
 export async function setSetting(key, value) {
-  await db.run(
-    `
+  await sql`
     INSERT INTO bot_settings (key, value)
-    VALUES (?, ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `,
-    key,
-    value
-  );
+    VALUES (${key}, ${value ?? null})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+  `;
 }
 
 // ==================== HISTORY (for the AI feature) ====================
@@ -161,18 +182,15 @@ export async function getRelevantHistory(client, notifyChannelId, userId, replyM
         ?.messages.fetch(replyMsgId);
 
       if (repliedMsg && repliedMsg.author.id === client.user.id) {
-        const row = await db.get(
-          `
+        const rows = await sql`
           SELECT prompt, response, model
           FROM history
-          WHERE response = ?
+          WHERE response = ${repliedMsg.content}
           LIMIT 1
-          `,
-          repliedMsg.content
-        );
+        `;
 
-        if (row) {
-          extraHistory.push(row);
+        if (rows[0]) {
+          extraHistory.push(rows[0]);
         }
       }
     } catch (error) {
@@ -180,17 +198,13 @@ export async function getRelevantHistory(client, notifyChannelId, userId, replyM
     }
   }
 
-  const historyRows = await db.all(
-    `
+  const historyRows = await sql`
     SELECT prompt, response, model
     FROM history
-    WHERE user_id = ?
+    WHERE user_id = ${userId}
     ORDER BY id DESC
-    LIMIT ?
-    `,
-    userId,
-    HISTORY_COUNT
-  );
+    LIMIT ${HISTORY_COUNT}
+  `;
 
   return [...historyRows.reverse(), ...extraHistory];
 }
@@ -198,53 +212,41 @@ export async function getRelevantHistory(client, notifyChannelId, userId, replyM
 export async function saveHistory(userId, prompt, result, model) {
   if (result.length > 10000) return;
 
-  await db.run(
-    `
-    INSERT INTO history
-    (user_id, prompt, response, created_at, model)
-    VALUES (?, ?, ?, ?, ?)
-    `,
-    userId,
-    prompt,
-    result,
-    new Date().toISOString(),
-    model
-  );
+  await sql`
+    INSERT INTO history (user_id, prompt, response, created_at, model)
+    VALUES (${userId}, ${prompt}, ${result}, ${new Date()}, ${model})
+  `;
 
-  // AUTO-TRIM: history is now only used for the `mhistory` command
-  // (manual review), NOT the AI context source anymore (that's
-  // companion_memory's job). Safe to keep only the last
-  // HISTORY_RETAIN_COUNT rows PER USER -- self-cleans on every insert,
-  // no separate cron/scheduler needed.
-  await db.run(
-    `
+  // AUTO-TRIM per user, sama seperti SQLite lama.
+  await sql`
     DELETE FROM history
-    WHERE user_id = ? AND id NOT IN (
-      SELECT id FROM history WHERE user_id = ? ORDER BY id DESC LIMIT ?
-    )
-    `,
-    userId,
-    userId,
-    HISTORY_RETAIN_COUNT
-  );
+    WHERE user_id = ${userId}
+      AND id NOT IN (
+        SELECT id FROM history
+        WHERE user_id = ${userId}
+        ORDER BY id DESC
+        LIMIT ${HISTORY_RETAIN_COUNT}
+      )
+  `;
 }
 
 export async function getRecentHistory(userId, limit = 5) {
-  return db.all(
-    `
+  const rows = await sql`
     SELECT prompt, response, created_at
     FROM history
-    WHERE user_id = ?
+    WHERE user_id = ${userId}
     ORDER BY id DESC
-    LIMIT ?
-    `,
-    userId,
-    limit
-  );
+    LIMIT ${limit}
+  `;
+
+  return rows.map((row) => ({
+    ...row,
+    created_at: iso(row.created_at),
+  }));
 }
 
 export async function clearHistory(userId) {
-  await db.run("DELETE FROM history WHERE user_id = ?", userId);
+  await sql`DELETE FROM history WHERE user_id = ${userId}`;
 }
 
 // ==================== COMPANION MEMORY ====================
@@ -260,29 +262,34 @@ const DEFAULT_COMPANION = {
 };
 
 export async function getOrCreateCompanion(userId) {
-  const row = await db.get(
-    `SELECT * FROM companion_memory WHERE user_id = ?`,
-    userId
-  );
+  const rows = await sql`
+    SELECT * FROM companion_memory WHERE user_id = ${userId}
+  `;
 
-  if (row) return row;
+  if (rows[0]) {
+    return {
+      ...rows[0],
+      updated_at: iso(rows[0].updated_at),
+    };
+  }
 
-  await db.run(
-    `
-    INSERT INTO companion_memory
-    (user_id, nickname, affection, summary, facts, last_prompt, last_response, turns_since_summary, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    userId,
-    DEFAULT_COMPANION.nickname,
-    DEFAULT_COMPANION.affection,
-    DEFAULT_COMPANION.summary,
-    DEFAULT_COMPANION.facts,
-    DEFAULT_COMPANION.last_prompt,
-    DEFAULT_COMPANION.last_response,
-    DEFAULT_COMPANION.turns_since_summary,
-    new Date().toISOString()
-  );
+  await sql`
+    INSERT INTO companion_memory (
+      user_id, nickname, affection, summary, facts,
+      last_prompt, last_response, turns_since_summary, updated_at
+    )
+    VALUES (
+      ${userId},
+      ${DEFAULT_COMPANION.nickname},
+      ${DEFAULT_COMPANION.affection},
+      ${DEFAULT_COMPANION.summary},
+      ${DEFAULT_COMPANION.facts},
+      ${DEFAULT_COMPANION.last_prompt},
+      ${DEFAULT_COMPANION.last_response},
+      ${DEFAULT_COMPANION.turns_since_summary},
+      ${new Date()}
+    )
+  `;
 
   return { user_id: userId, ...DEFAULT_COMPANION };
 }
@@ -291,101 +298,86 @@ export async function saveCompanion(userId, patch) {
   const current = await getOrCreateCompanion(userId);
   const merged = { ...current, ...patch };
 
-  await db.run(
-    `
+  await sql`
     UPDATE companion_memory SET
-      nickname = ?,
-      affection = ?,
-      summary = ?,
-      facts = ?,
-      last_prompt = ?,
-      last_response = ?,
-      turns_since_summary = ?,
-      updated_at = ?
-    WHERE user_id = ?
-    `,
-    merged.nickname,
-    merged.affection,
-    merged.summary,
-    merged.facts,
-    merged.last_prompt,
-    merged.last_response,
-    merged.turns_since_summary,
-    new Date().toISOString(),
-    userId
-  );
+      nickname = ${merged.nickname},
+      affection = ${merged.affection},
+      summary = ${merged.summary},
+      facts = ${merged.facts},
+      last_prompt = ${merged.last_prompt},
+      last_response = ${merged.last_response},
+      turns_since_summary = ${merged.turns_since_summary},
+      updated_at = ${new Date()}
+    WHERE user_id = ${userId}
+  `;
 }
 
 export async function resetCompanion(userId) {
-  await db.run(`DELETE FROM companion_memory WHERE user_id = ?`, userId);
+  await sql`DELETE FROM companion_memory WHERE user_id = ${userId}`;
 }
 
 export async function getCompanionPublicInfo(userId) {
-  return db.get(
-    `SELECT user_id, nickname, affection, summary, facts FROM companion_memory WHERE user_id = ?`,
-    userId
-  );
+  const rows = await sql`
+    SELECT user_id, nickname, affection, summary, facts
+    FROM companion_memory
+    WHERE user_id = ${userId}
+  `;
+
+  return rows[0];
 }
 
 // ==================== CHARACTER SPAWN (channel) ====================
 
 export async function getActiveSpawn(channelId) {
-  return db.get(
-    `SELECT * FROM channel_spawn WHERE channel_id = ?`,
-    channelId
-  );
+  const rows = await sql`
+    SELECT * FROM channel_spawn WHERE channel_id = ${channelId}
+  `;
+
+  return mapSpawn(rows[0]);
 }
 
 export async function setSpawn(channelId, character) {
-  const now = new Date().toISOString();
+  const now = new Date();
+  const anilistId =
+    character.anilistId === null || character.anilistId === undefined
+      ? null
+      : String(character.anilistId);
 
-  await db.run(
-    `
-    INSERT INTO channel_spawn
-      (channel_id, last_spawn_at, anilist_id, name, series, image_url, rarity, spawned_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(channel_id) DO UPDATE SET
-      last_spawn_at = excluded.last_spawn_at,
-      anilist_id = excluded.anilist_id,
-      name = excluded.name,
-      series = excluded.series,
-      image_url = excluded.image_url,
-      rarity = excluded.rarity,
-      spawned_at = excluded.spawned_at
-    `,
-    channelId,
-    now,
-    character.anilistId,
-    character.name,
-    character.series,
-    character.image,
-    character.rarity,
-    now
-  );
+  await sql`
+    INSERT INTO channel_spawn (
+      channel_id, last_spawn_at, anilist_id, name, series,
+      image_url, rarity, spawned_at
+    )
+    VALUES (
+      ${channelId}, ${now}, ${anilistId}, ${character.name}, ${character.series},
+      ${character.image}, ${character.rarity}, ${now}
+    )
+    ON CONFLICT (channel_id) DO UPDATE SET
+      last_spawn_at = EXCLUDED.last_spawn_at,
+      anilist_id = EXCLUDED.anilist_id,
+      name = EXCLUDED.name,
+      series = EXCLUDED.series,
+      image_url = EXCLUDED.image_url,
+      rarity = EXCLUDED.rarity,
+      spawned_at = EXCLUDED.spawned_at
+  `;
 }
 
 export async function touchSpawnTimer(channelId) {
-  await db.run(
-    `
+  await sql`
     INSERT INTO channel_spawn (channel_id, last_spawn_at)
-    VALUES (?, ?)
-    ON CONFLICT(channel_id) DO NOTHING
-    `,
-    channelId,
-    new Date().toISOString()
-  );
+    VALUES (${channelId}, ${new Date()})
+    ON CONFLICT (channel_id) DO NOTHING
+  `;
 }
 
 export async function clearSpawn(channelId) {
-  await db.run(
-    `
+  await sql`
     UPDATE channel_spawn
     SET anilist_id = NULL, name = NULL, series = NULL,
         image_url = NULL, rarity = NULL
-    WHERE channel_id = ?
-    `,
-    channelId
-  );
+    WHERE channel_id = ${channelId}
+  `;
 }
 
 export async function claimActiveCharacter(channelId, userId) {
@@ -397,207 +389,210 @@ export async function claimActiveCharacter(channelId, userId) {
 
   await clearSpawn(channelId);
 
-  await db.run(
-    `
-    INSERT INTO character_claims
-    (user_id, anilist_id, name, series, image_url, rarity, claimed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    `,
-    userId,
-    spawn.anilist_id,
-    spawn.name,
-    spawn.series,
-    spawn.image_url,
-    spawn.rarity,
-    new Date().toISOString()
-  );
+  await sql`
+    INSERT INTO character_claims (
+      user_id, anilist_id, name, series, image_url, rarity, claimed_at
+    )
+    VALUES (
+      ${userId},
+      ${String(spawn.anilist_id)},
+      ${spawn.name},
+      ${spawn.series},
+      ${spawn.image_url},
+      ${spawn.rarity},
+      ${new Date()}
+    )
+  `;
 
   return spawn;
 }
 
 export async function getUserCollection(userId, limit = 100) {
-  return db.all(
-    `
+  const rows = await sql`
     SELECT id, name, series, rarity, image_url, claimed_at
     FROM character_claims
-    WHERE user_id = ?
+    WHERE user_id = ${userId}
     ORDER BY id DESC
-    LIMIT ?
-    `,
-    userId,
-    limit
-  );
+    LIMIT ${limit}
+  `;
+
+  return rows.map((row) => ({
+    ...row,
+    id: toNumber(row.id),
+    claimed_at: iso(row.claimed_at),
+  }));
 }
 
 export async function getUserCollectionCount(userId) {
-  const row = await db.get(
-    `SELECT COUNT(*) AS total FROM character_claims WHERE user_id = ?`,
-    userId
-  );
-  return row?.total || 0;
+  const rows = await sql`
+    SELECT COUNT(*)::int AS total
+    FROM character_claims
+    WHERE user_id = ${userId}
+  `;
+
+  return rows[0]?.total || 0;
 }
 
-// Directly inserts a character into a user's collection, bypassing the
-// normal spawn/claim flow entirely. Used by the owner-only admincard
-// command -- does NOT touch channel_spawn state at all, so it has no
-// effect on the normal spawn timer/active-spawn logic for anyone else.
 export async function grantCharacterDirectly(userId, character) {
-  await db.run(
-    `
-    INSERT INTO character_claims
-    (user_id, anilist_id, name, series, image_url, rarity, claimed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    `,
-    userId,
-    character.anilistId,
-    character.name,
-    character.series,
-    character.image,
-    character.rarity,
-    new Date().toISOString()
-  );
+  const anilistId =
+    character.anilistId === null || character.anilistId === undefined
+      ? null
+      : String(character.anilistId);
+
+  await sql`
+    INSERT INTO character_claims (
+      user_id, anilist_id, name, series, image_url, rarity, claimed_at
+    )
+    VALUES (
+      ${userId},
+      ${anilistId},
+      ${character.name},
+      ${character.series},
+      ${character.image},
+      ${character.rarity},
+      ${new Date()}
+    )
+  `;
 }
 
 export async function listKnownCompanionUserIds(excludeUserId, limit = 100) {
-  const rows = await db.all(
-    `SELECT user_id FROM companion_memory WHERE user_id != ? LIMIT ?`,
-    excludeUserId,
-    limit
-  );
+  const rows = await sql`
+    SELECT user_id
+    FROM companion_memory
+    WHERE user_id != ${excludeUserId}
+    LIMIT ${limit}
+  `;
+
   return rows.map((r) => r.user_id);
 }
 
 // ==================== PASSIVE LEARNING (chat buffer) ====================
 
 export async function addPassiveMessage(userId, content) {
-  await db.run(
-    `INSERT INTO passive_chat_buffer (user_id, content, created_at) VALUES (?, ?, ?)`,
-    userId,
-    content,
-    new Date().toISOString()
-  );
+  await sql`
+    INSERT INTO passive_chat_buffer (user_id, content, created_at)
+    VALUES (${userId}, ${content}, ${new Date()})
+  `;
 }
 
 export async function getPassiveBuffer(userId) {
-  return db.all(
-    `SELECT id, content FROM passive_chat_buffer WHERE user_id = ? ORDER BY id ASC`,
-    userId
-  );
+  const rows = await sql`
+    SELECT id, content
+    FROM passive_chat_buffer
+    WHERE user_id = ${userId}
+    ORDER BY id ASC
+  `;
+
+  return rows.map((row) => ({
+    ...row,
+    id: toNumber(row.id),
+  }));
 }
 
 export async function getPassiveBufferCount(userId) {
-  const row = await db.get(
-    `SELECT COUNT(*) AS total FROM passive_chat_buffer WHERE user_id = ?`,
-    userId
-  );
-  return row?.total || 0;
+  const rows = await sql`
+    SELECT COUNT(*)::int AS total
+    FROM passive_chat_buffer
+    WHERE user_id = ${userId}
+  `;
+
+  return rows[0]?.total || 0;
 }
 
 export async function clearPassiveBuffer(userId, uptoId = null) {
   if (uptoId) {
-    await db.run(
-      `DELETE FROM passive_chat_buffer WHERE user_id = ? AND id <= ?`,
-      userId,
-      uptoId
-    );
+    await sql`
+      DELETE FROM passive_chat_buffer
+      WHERE user_id = ${userId} AND id <= ${uptoId}
+    `;
   } else {
-    await db.run(`DELETE FROM passive_chat_buffer WHERE user_id = ?`, userId);
+    await sql`
+      DELETE FROM passive_chat_buffer
+      WHERE user_id = ${userId}
+    `;
   }
 }
 
-// ==================== VACUUM ====================
-
-async function getFreeDiskMBFor(path) {
-  const stats = await statfs(path);
-  return (stats.bavail * stats.bsize) / (1024 * 1024);
-}
-
-async function getDbFileSizeMB() {
-  const stats = await stat(DB_FILENAME);
-  return stats.size / (1024 * 1024);
-}
+// ==================== VACUUM / STORAGE COMPATIBILITY ====================
+// PostgreSQL/Neon tidak memakai SQLite VACUUM/incremental vacuum.
+// Fungsi-fungsi ini tetap diekspor agar command lama tidak error.
 
 export async function vacuumDatabase({ force = false } = {}) {
-  if (!force) {
-    const [freeMB, dbSizeMB] = await Promise.all([
-      getFreeDiskMBFor(process.cwd()),
-      getDbFileSizeMB(),
-    ]);
-    const requiredMB = dbSizeMB * VACUUM_SAFETY_MULTIPLIER;
-
-    if (freeMB < requiredMB) {
-      throw new Error(
-        `Refusing to VACUUM: need ~${requiredMB.toFixed(0)} MB free ` +
-          `(${VACUUM_SAFETY_MULTIPLIER}x current ${dbSizeMB.toFixed(0)} MB db size) ` +
-          `but only ~${freeMB.toFixed(1)} MB available. Free up disk space first.`
-      );
-    }
-  }
-
-  await db.exec("VACUUM");
-}
-
-async function getPersistedAutoVacuumMode() {
-  const probe = await open({ filename: DB_FILENAME, driver: sqlite3.Database });
   try {
-    const row = await probe.get("PRAGMA auto_vacuum");
-    return row["auto_vacuum"];
-  } finally {
-    await probe.close();
+    await sql`VACUUM (ANALYZE)`;
+    return {
+      ok: true,
+      engine: "postgres",
+      forced: force,
+    };
+  } catch (error) {
+    // Beberapa managed Postgres membatasi VACUUM manual.
+    // Autovacuum tetap berjalan di sisi provider.
+    return {
+      ok: false,
+      skipped: true,
+      engine: "postgres",
+      reason: error.message,
+    };
   }
 }
 
 export async function convertToIncrementalVacuum() {
-  const currentMode = await getPersistedAutoVacuumMode();
-  if (currentMode === 2) {
-    return { converted: false, alreadyIncremental: true };
-  }
-
-  await db.exec("PRAGMA auto_vacuum = INCREMENTAL");
-  await vacuumDatabase();
-
-  return { converted: true, alreadyIncremental: false };
+  return {
+    converted: false,
+    alreadyIncremental: true,
+    engine: "postgres",
+    note: "Neon/PostgreSQL memakai autovacuum, bukan SQLite incremental vacuum.",
+  };
 }
 
 export async function incrementalVacuum(pageCount = 200) {
-  await db.exec(`PRAGMA incremental_vacuum(${pageCount})`);
+  return {
+    skipped: true,
+    engine: "postgres",
+    requestedPages: pageCount,
+  };
 }
 
 export async function getVacuumStatus() {
-  const autoVacuum = await db.get("PRAGMA auto_vacuum");
-  const freelistCount = await db.get("PRAGMA freelist_count");
-  const pageCount = await db.get("PRAGMA page_count");
-  const pageSize = await db.get("PRAGMA page_size");
-  const persistedAutoVacuumMode = await getPersistedAutoVacuumMode();
+  const stats = await sql`
+    SELECT
+      COALESCE(SUM(n_dead_tup), 0)::bigint AS dead_tuples,
+      COALESCE(SUM(n_live_tup), 0)::bigint AS live_tuples
+    FROM pg_stat_user_tables
+  `;
+
+  const size = await sql`
+    SELECT pg_database_size(current_database())::bigint AS bytes
+  `;
 
   return {
-    autoVacuumMode: autoVacuum["auto_vacuum"],
-    persistedAutoVacuumMode,
-    freePages: freelistCount["freelist_count"],
-    totalPages: pageCount["page_count"],
-    pageSizeBytes: pageSize["page_size"],
+    engine: "postgres",
+    autoVacuumMode: "automatic",
+    persistedAutoVacuumMode: "automatic",
+    freePages: 0,
+    totalPages: 0,
+    pageSizeBytes: 8192,
+    deadTuples: toNumber(stats[0]?.dead_tuples),
+    liveTuples: toNumber(stats[0]?.live_tuples),
+    databaseSizeBytes: toNumber(size[0]?.bytes),
   };
 }
 
 // ==================== MODEL USAGE (for the stats feature) ====================
 
 export async function logModelUsage(model, success) {
-  await db.run(
-    `
+  await sql`
     INSERT INTO model_usage_stats (model, success_count, fail_count)
-    VALUES (?, ?, ?)
-    ON CONFLICT(model) DO UPDATE SET
-      success_count = success_count + excluded.success_count,
-      fail_count = fail_count + excluded.fail_count
-    `,
-    model,
-    success ? 1 : 0,
-    success ? 0 : 1
-  );
+    VALUES (${model}, ${success ? 1 : 0}, ${success ? 0 : 1})
+    ON CONFLICT (model) DO UPDATE SET
+      success_count = model_usage_stats.success_count + EXCLUDED.success_count,
+      fail_count = model_usage_stats.fail_count + EXCLUDED.fail_count
+  `;
 }
 
 export async function getModelStats() {
-  return db.all(`
+  const rows = await sql`
     SELECT
       model,
       success_count AS sukses,
@@ -608,5 +603,25 @@ export async function getModelStats() {
       ) AS rate
     FROM model_usage_stats
     ORDER BY rate DESC
-  `);
+  `;
+
+  return rows.map((row) => ({
+    ...row,
+    sukses: toNumber(row.sukses),
+    total: toNumber(row.total),
+    rate: row.rate === null ? null : toNumber(row.rate),
+  }));
+}
+
+export async function getDatabaseSizeBytes() {
+  const rows = await sql`
+    SELECT pg_database_size(current_database())::bigint AS bytes
+  `;
+
+  return Number(rows[0]?.bytes ?? 0);
+}
+
+// Opsional: untuk graceful shutdown di index.js
+export async function closeDB() {
+  await sql.end();
 }

@@ -2,6 +2,10 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+// ==================== DATABASE ====================
+export const DATABASE_URL = process.env.DATABASE_URL; // PostgreSQL connection string
+export const USE_POSTGRES = !!DATABASE_URL; // Auto-detect: jika ada, pakai Postgres
+
 // ==================== CORE ====================
 
 export const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -210,7 +214,6 @@ export const COMMANDS = {
   profil: process.env.CMD_PROFIL || "profil",
   resetcompanion: process.env.CMD_RESETCOMPANION || "resetcompanion",
   diskusage: process.env.CMD_DISKUSAGE || "diskusage",
-  vacuumconvert: process.env.CMD_VACUUMCONVERT || "vacuumconvert",
   setSpawnChannel: process.env.CMD_SETSPAWNCHANNEL || "setspawnchannel",
   admincard: process.env.CMD_ADMINCARD || "admincard",
 };
