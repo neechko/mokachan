@@ -195,5 +195,3 @@ If the bot fails to start with a `CONNECT_TIMEOUT` error on hosting platforms:
 2. Ensure the bot has `Read Messages` and `Send Messages` permissions in the target channel.
 3. Confirm `GatewayIntentBits.MessageContent` is enabled in `index.js` and the "Message Content Intent" is toggled on in the Discord Developer Portal.
 ```
-
-Silakan copy seluruh teks di atas (dari `<p align="center">` sampai akhir) dan paste ke file `README.md` Anda. File ini sudah siap untuk di-commit dan di-push ke repository Anda!
