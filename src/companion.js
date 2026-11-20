@@ -1,14 +1,24 @@
 // ==================== COMPANION MEMORY ====================
+// Token-efficient relationship memory:
+//   1. System persona + relationship stage
+//   2. Short AI-generated summary
+//   3. Short user facts
+//   4. One last turn for conversational continuity
+//   5. The new prompt
+//
+// Relationship progression now uses XP, levels, stages, and hidden traits
+// instead of simple affection points.
+
 import {
   BOT_NAME,
   TRIM_CHARS,
   SUMMARY_EVERY_N_TURNS,
   MAX_FACTS,
-  AFFECTION_PER_TURN,
   PREFIX,
   RECENT_CONTEXT_MESSAGE_COUNT,
   RECENT_CONTEXT_TRIM_CHARS,
 } from "./config.js";
+
 import {
   getOrCreateCompanion,
   saveCompanion,
@@ -17,14 +27,15 @@ import {
   listKnownCompanionUserIds,
   clearPassiveBuffer,
 } from "./database.js";
+
 import { callGemini } from "./gemini.js";
 
-function affectionLabel(points) {
-  if (points >= 150) return "sangat dekat, akrab seperti sahabat lama";
-  if (points >= 60) return "sudah akrab dan nyaman ngobrol santai";
-  if (points >= 20) return "mulai kenal baik, tidak canggung lagi";
-  return "baru mulai kenal, masih agak sopan/formal";
-}
+import {
+  getRelationshipProfile,
+  calculateRelationshipGain,
+  formatRelationshipForPrompt,
+  formatRelationshipForDisplay,
+} from "./relationship.js";
 
 function safeParseFacts(raw) {
   try {
@@ -78,8 +89,8 @@ export async function buildRecentChannelContext(msg) {
     });
 
     const lines = [...fetched.values()]
-      .reverse() 
-      .filter((m) => m.id !== msg.id) 
+      .reverse()
+      .filter((m) => m.id !== msg.id)
       .filter((m) => !m.author.bot)
       .filter(
         (m) => !m.content.trim().toLowerCase().startsWith(PREFIX.toLowerCase())
@@ -126,7 +137,7 @@ export async function findNameMentionedUsers(msg, promptText, excludeIds = new S
 
       if (msg.guild) {
         const member = await msg.guild.members.fetch(id).catch(() => null);
-        if (!member) continue; 
+        if (!member) continue;
         username = member.user.username;
         discordNickname = member.nickname;
         user = member.user;
@@ -150,78 +161,96 @@ export async function findNameMentionedUsers(msg, promptText, excludeIds = new S
 
       if (isMentioned) found.push(user);
     } catch {
-      // failed to fetch one candidate, move on to the next
+      // Failed to fetch one candidate, move on to the next.
     }
   }
 
   return found;
 }
 
+// Builds the messages array ready to send to callGemini().
 export async function buildCompanionMessages(userId, prompt, mentionedUsers = [], recentContext = "") {
   const state = await getOrCreateCompanion(userId);
   const facts = safeParseFacts(state.facts);
+
   const mentionedContext = await buildMentionedMembersContext(
     mentionedUsers.filter((u) => u.id !== userId)
   );
 
+  const relationship = getRelationshipProfile(state);
+
   const today = new Date();
   const currentYear = today.getFullYear();
-  const currentDate = today.toLocaleDateString('id-ID', { 
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+  const currentDate = today.toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
   });
 
   const systemContent = `
-Kamu adalah ${BOT_NAME}, AI Discord yang cerdas, empatik, dan sangat membantu.
-Karaktarmu beradaptasi secara dinamis berdasarkan tingkat kedekatan (afeksi) dengan user.
+You are ${BOT_NAME}, an intelligent, empathetic, and helpful Discord AI.
+Your personality adapts dynamically based on your closeness level with the user.
 
 ---
-[PEDOMAN BERPIKIR & MENJAWAB - PENTING]
-1. Analisis Maksud: Pahami apa yang sebenarnya diinginkan user.
-2. Format Discord (WAJIB DITAATI):
-   - Gunakan **bold** untuk poin penting atau penekanan.
-   - Gunakan \`code\` untuk istilah teknis, perintah, atau nama file.
-   - Gunakan list (- atau 1.) untuk penjelasan bertahap.
-   - Gunakan blockquote (>) untuk kutipan atau konteks tambahan.
-   - **JANGAN PERNAH menggunakan Tabel Markdown (|---|---|)** karena tampilannya hancur di Discord. Selalu gunakan List/Bullet points sebagai gantinya.
-   - **JANGAN gunakan simbol # untuk heading** (#, ##, ###). Gunakan **TEKS TEBAL** atau HURUF KAPITAL sebagai pemisah bagian.
-3. Kejujuran Intelektual: JANGAN pernah mengarang fakta (halusinasi).
-4. Anti-Klise: JANGAN mulai jawaban dengan "Tentu!", "Sebagai AI...", "Baiklah...". Langsung masuk ke inti.
-5. Proaktivitas: Tawarkan langkah selanjutnya atau ajukan pertanyaan pemantik.
+[THINKING & RESPONSE GUIDELINES - IMPORTANT]
+1. Understand intent: figure out what the user actually wants, whether it is facts, emotional support, coding help, technical help, or casual conversation.
+2. Discord formatting:
+   - Use **bold** for important points.
+   - Use \`code\` for technical terms, commands, or file names.
+   - Use lists (- or 1.) for step-by-step explanations.
+   - Use blockquotes (>) for quotes or extra context.
+   - NEVER use Markdown tables (|---|---|), because they render badly in Discord.
+   - NEVER use # headings. Use **bold text** or CAPITALIZED section labels instead.
+3. Intellectual honesty: if you do not know, are unsure, or lack reliable information, say so honestly. Do not invent facts.
+4. Avoid clichés: do not start with robotic phrases like "Certainly!", "As an AI...", "Alright...", or "Hello!". Go straight to the answer naturally.
+5. Proactivity: after answering complex questions, offer a next step or ask a natural follow-up question, adjusted to the closeness level.
 
-[EFEKTIVITAS & PENGHEMATAN TOKEN]
-- Jika user menanyakan hal yang SAMA PERSIS atau sangat mirip dengan pertanyaan mereka sebelumnya (yang sudah ada di riwayat obrolan terakhir), JANGAN panggil 'search_web' lagi. 
-- Cukup rujuk jawaban terakhirmu, atau tanya apa yang kurang dari jawaban sebelumnya. Jangan memboroskan pencarian web untuk pertanyaan yang baru saja dijawab.
+[SPEAKING STYLE & PERSONA]
+- Match the user's language. If they use Indonesian, reply in Indonesian. If they use English, reply in English.
+- Keep the tone natural, relaxed, structured, and informative.
+- Adapt to the relationship context below:
+  * Low closeness: polite, helpful, warm, professional.
+  * High closeness: more relaxed, expressive, playful, and personal.
 
-[GAYA BICARA & PERSONA]
-- Bahasa: Natural, santai, terstruktur, dan informatif.
-- Adaptasi Afeksi:
-  * Afeksi Rendah: Sopan, helpful, profesional namun hangat.
-  * Afeksi Tinggi: Lebih santai, ekspresif, boleh bercanda.
+[TIME CONTEXT]
+Today is ${currentDate} (Year ${currentYear}).
+Use this as the absolute reference when searching for current news, trends, or real-time information.
 
-[KONTEKS WAKTU]
-Hari ini adalah ${currentDate} (Tahun ${currentYear}). 
+[WEB SEARCH TOOL RULES]
+You have access to the search_web tool. Use it ONLY when the user asks about:
+1. Current news, today's events, or real-time information such as weather, prices, or match results.
+2. Specific schedules such as flights, movie/game releases, or events.
+3. Recent facts or specific data you do not reliably know.
 
-[ATURAN PENCARIAN WEB (search_web)]
-Gunakan alat ini HANYA JIKA user menanyakan berita terkini, info real-time, atau fakta terbaru yang tidak kamu ketahui.
-JANGAN gunakan untuk obrolan santai atau pertanyaan yang sudah kamu ketahui.
-Jika menggunakan hasil web, rangkum dengan format List (bukan tabel) dan sertakan sumbernya.
----
+Do NOT use web search for casual chat, greetings, or general knowledge you already know.
+When using web results, summarize naturally, use lists instead of tables, and include sources when relevant.
 
-[KONTEKS MEMORI USER - RAHASIA]
-Tingkat kedekatanmu dengan user ini: ${affectionLabel(state.affection)} (poin: ${state.affection}).
-${state.nickname ? `Panggilan untuk user ini: "${state.nickname}".` : ""}
+[TOKEN EFFICIENCY]
+If the user asks a question with the same intent as one you already answered in the recent conversation, even if the wording is different, do NOT call search_web again.
+Refer to your previous answer, give a short recap, and ask what part they want to explore deeper.
+Exceptions:
+1. The user explicitly asks for fresh or updated information.
+2. The user adds a new specific context that was not covered before.
+3. A long time has passed, so the old information may be outdated.
 
-Ringkasan hubungan & obrolan kalian:
-${state.summary ? state.summary : "(belum ada)"}
+[USER MEMORY CONTEXT - PRIVATE]
+${formatRelationshipForPrompt(relationship)}
+${state.nickname ? `You usually call this user "${state.nickname}".` : ""}
 
-Hal-hal yang kamu ingat tentang user ini:
-${facts.length ? facts.map((f) => `- ${f}`).join("\n") : "(belum ada catatan khusus)"}
+Relationship & conversation summary:
+${state.summary ? state.summary : "(none yet)"}
+
+Things you remember about this user:
+${facts.length ? facts.map((f) => `- ${f}`).join("\n") : "(no special notes yet)"}
 ${mentionedContext}
 ${recentContext}
-  `.trim();
+`.trim();
 
   const messages = [{ role: "system", content: systemContent }];
 
+  // Only carry the ONE most recent turn.
+  // Long-term context is already represented by summary + facts.
   if (state.last_prompt && state.last_response) {
     messages.push({
       role: "user",
@@ -238,6 +267,9 @@ ${recentContext}
   return { messages, state };
 }
 
+// Asks the AI to re-summarize:
+// old summary + new turn -> new short summary + short fact list.
+// Only called occasionally, not on every message.
 async function regenerateSummary(state, prompt, reply) {
   const oldFacts = safeParseFacts(state.facts);
 
@@ -245,32 +277,37 @@ async function regenerateSummary(state, prompt, reply) {
     {
       role: "system",
       content: `
-Kamu adalah sistem PERINGKAS MEMORI untuk AI companion bernama ${BOT_NAME}.
-Tugasmu: gabungkan ringkasan lama + percakapan baru menjadi SATU ringkasan
-baru yang SANGAT SINGKAT (maksimal 4 kalimat).
+You are a MEMORY SUMMARIZATION SYSTEM for an AI companion named ${BOT_NAME}.
+Your task: merge the old summary + new conversation into ONE very short new summary, maximum 4 sentences.
+Focus on long-term useful information: favorite topics, user personality, running jokes, ongoing situations, preferences, and relationship dynamics.
+Do not include unnecessary small details.
 
-Juga perbarui daftar "fakta" pendek tentang user (maks ${MAX_FACTS} item).
+Also update the short facts list about the user, maximum ${MAX_FACTS} items.
+Each fact must be short and useful.
 
-Balas HANYA dengan JSON valid, tanpa markdown, format persis:
+Write the summary and facts in English.
+Reply ONLY with valid JSON, no markdown, no extra explanation.
+Exact format:
 {"summary": "...", "facts": ["...", "..."]}
-      `.trim(),
+`.trim(),
     },
     {
       role: "user",
       content: `
-Ringkasan lama:
-${state.summary || "(kosong)"}
+Old summary:
+${state.summary || "(empty)"}
 
-Fakta lama:
-${oldFacts.length ? oldFacts.join(", ") : "(kosong)"}
+Old facts:
+${oldFacts.length ? oldFacts.join(", ") : "(empty)"}
 
-Percakapan baru:
+New conversation:
 User: ${prompt}
 ${BOT_NAME}: ${reply}
-      `.trim(),
+`.trim(),
     },
   ];
 
+  // Important: disable tools so the summarizer does not call web search.
   const outcome = await callGemini(summarizerMessages, { useTools: false });
   if (!outcome) return null;
 
@@ -293,11 +330,31 @@ ${BOT_NAME}: ${reply}
   }
 }
 
+// Called after the AI successfully replies.
+// Updates relationship XP, traits, last turn, and occasionally the summary.
 export async function updateCompanionAfterReply(userId, state, prompt, reply) {
-  const newAffection = Math.min(
-    (state.affection || 0) + AFFECTION_PER_TURN,
-    9999
+  const gain = calculateRelationshipGain(state, prompt, reply, {
+    source: "command",
+  });
+
+  const currentXp = Number(state.relationship_xp) || 0;
+  const newRelationshipXp = currentXp + gain.xp;
+
+  const newTrust = Math.max(
+    0,
+    Math.min(100, (Number(state.trust) || 0) + gain.trustDelta)
   );
+
+  const newComfort = Math.max(
+    0,
+    Math.min(100, (Number(state.comfort) || 0) + gain.comfortDelta)
+  );
+
+  const newFamiliarity = Math.max(
+    0,
+    Math.min(100, (Number(state.familiarity) || 0) + gain.familiarityDelta)
+  );
+
   const turns = (state.turns_since_summary || 0) + 1;
 
   let summary = state.summary;
@@ -316,7 +373,15 @@ export async function updateCompanionAfterReply(userId, state, prompt, reply) {
   }
 
   await saveCompanion(userId, {
-    affection: newAffection,
+    relationship_xp: newRelationshipXp,
+    trust: newTrust,
+    comfort: newComfort,
+    familiarity: newFamiliarity,
+    interaction_count: (Number(state.interaction_count) || 0) + 1,
+    last_interaction_at: gain.now,
+    xp_day: gain.dayXp,
+    xp_day_date: gain.dayDate,
+
     summary,
     facts,
     last_prompt: prompt,
@@ -324,26 +389,46 @@ export async function updateCompanionAfterReply(userId, state, prompt, reply) {
     turns_since_summary: turnsSinceSummary,
   });
 
-  return { affection: newAffection };
+  const nextState = {
+    ...state,
+    relationship_xp: newRelationshipXp,
+    trust: newTrust,
+    comfort: newComfort,
+    familiarity: newFamiliarity,
+  };
+
+  return {
+    relationship: getRelationshipProfile(nextState),
+    gainedXp: gain.xp,
+  };
 }
 
 export async function getCompanionProfile(userId) {
   const state = await getOrCreateCompanion(userId);
+  const relationship = getRelationshipProfile(state);
+
   return {
     ...state,
     facts: safeParseFacts(state.facts),
-    label: affectionLabel(state.affection),
+    relationship,
+    label: relationship.stageLabel,
+    relationshipText: formatRelationshipForDisplay(relationship),
   };
 }
 
+// Read-only version for viewing another member's profile.
 export async function getCompanionPublicProfile(userId) {
   const info = await getCompanionPublicInfo(userId);
   if (!info) return null;
 
+  const relationship = getRelationshipProfile(info);
+
   return {
     ...info,
     facts: safeParseFacts(info.facts),
-    label: affectionLabel(info.affection),
+    relationship,
+    label: relationship.stageLabel,
+    relationshipText: formatRelationshipForDisplay(relationship),
   };
 }
 

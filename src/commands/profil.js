@@ -1,15 +1,21 @@
 import discordjs from "discord.js";
 const { EmbedBuilder } = discordjs;
+
 import { BOT_NAME } from "../config.js";
 import {
   getCompanionProfile,
   getCompanionPublicProfile,
 } from "../companion.js";
 
-// `mprofil` -> view your own profile (auto-created if it doesn't exist yet).
-// `mprofil @member` -> view what mokachan remembers about another member
-// (read-only, doesn't create a new row), so members can get to know each
-// other through the bot.
+function truncateEmbedValue(text, maxLength = 1024) {
+  if (!text) return "(empty)";
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength - 3) + "...";
+}
+
+// `mprofil` -> view your own relationship profile.
+// `mprofil @member` -> view what mokachan remembers about another member.
+// Public profiles are read-only and do not create a new companion row.
 export async function handleProfilCommand(msg) {
   const targetUser = msg.mentions.users.first() || msg.author;
   const isSelf = targetUser.id === msg.author.id;
@@ -24,30 +30,67 @@ export async function handleProfilCommand(msg) {
     );
   }
 
+  const relationship = profile.relationship;
+
+  const relationshipText =
+    profile.relationshipText ||
+    (relationship
+      ? `**Level ${relationship.level} — ${relationship.stageLabel}**`
+      : "Relationship data is not available yet.");
+
+  const factsText = profile.facts?.length
+    ? profile.facts.map((f) => `- ${f}`).join("\n")
+    : "(no notes yet)";
+
   const embed = new EmbedBuilder()
     .setTitle(
       isSelf
         ? `Your relationship with ${BOT_NAME}`
         : `${targetUser.username}'s relationship with ${BOT_NAME}`
     )
+    .setDescription(truncateEmbedValue(relationshipText, 4096))
     .addFields(
-      { name: "Affection points", value: `${profile.affection}`, inline: true },
-      { name: "Status", value: profile.label, inline: true },
       {
         name: "Nickname",
         value: profile.nickname || "(none yet)",
         inline: true,
       },
       {
+        name: "Stage",
+        value: profile.label || relationship?.stageLabel || "Unknown",
+        inline: true,
+      },
+      {
         name: "What's remembered",
-        value: profile.facts.length
-          ? profile.facts.map((f) => `- ${f}`).join("\n")
-          : "(no notes yet)",
+        value: truncateEmbedValue(factsText),
       }
     )
     .setColor(0xff69b4)
     .setFooter({ text: BOT_NAME })
     .setTimestamp();
+
+  // Only show extra private stats when viewing your own profile.
+  if (isSelf) {
+    if (profile.interaction_count !== undefined) {
+      embed.addFields({
+        name: "Interactions",
+        value: String(profile.interaction_count),
+        inline: true,
+      });
+    }
+
+    if (relationship) {
+      embed.addFields({
+        name: "Trust / Comfort / Familiarity",
+        value: [
+          `Trust: **${relationship.trustLabel}**`,
+          `Comfort: **${relationship.comfortLabel}**`,
+          `Familiarity: **${relationship.familiarityLabel}**`,
+        ].join("\n"),
+        inline: false,
+      });
+    }
+  }
 
   return msg.reply({ embeds: [embed] });
 }

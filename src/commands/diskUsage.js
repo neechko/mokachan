@@ -116,7 +116,6 @@ export async function handleDiskUsageCommand(msg) {
       name: "Neon PostgreSQL",
       value: [
         `Ukuran database: **${formatBytes(neonBytes)}**`,
-        "Data bot sekarang disimpan di Neon, bukan di disk hosting.",
       ].join("\n"),
     });
   } catch (error) {
@@ -125,10 +124,6 @@ export async function handleDiskUsageCommand(msg) {
       value: `Tidak bisa mengambil ukuran database: ${error.message}`,
     });
   }
-
-  embed.setFooter({
-    text: "Catatan: angka disk adalah filesystem yang terlihat proses. Kuota panel hosting bisa berbeda.",
-  });
 
   return msg.reply({ embeds: [embed] });
 }

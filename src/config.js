@@ -3,8 +3,8 @@ import dotenv from "dotenv";
 dotenv.config();
 
 // ==================== DATABASE ====================
-export const DATABASE_URL = process.env.DATABASE_URL; // PostgreSQL connection string
-export const USE_POSTGRES = !!DATABASE_URL; // Auto-detect: jika ada, pakai Postgres
+export const DATABASE_URL = process.env.DATABASE_URL;
+export const USE_POSTGRES = !!DATABASE_URL;
 
 // ==================== CORE ====================
 
@@ -20,11 +20,9 @@ export const COMMAND_CASE_INSENSITIVE =
   process.env.COMMAND_CASE_INSENSITIVE === "true";
 
 // Discord user ID of the bot owner. Used to gate owner-only commands
-// (e.g. directly granting yourself a character card) -- unlike server
-// "Manage Server" permission checks used elsewhere, this is tied to
-// one specific person regardless of which server the command is run
-// in. Find your own ID: enable Developer Mode in Discord settings,
-// then right-click your profile and choose "Copy User ID".
+// (e.g. directly granting a character card). Unlike server "Manage Server"
+// permission checks, this is tied to one specific person regardless of
+// which server the command is run in.
 export const OWNER_ID = process.env.OWNER_ID || null;
 
 // ==================== HISTORY / OUTPUT ====================
@@ -33,9 +31,8 @@ export const HISTORY_COUNT = parseInt(process.env.HISTORY_COUNT, 10) || 5;
 
 // How many raw history rows (mhistory) are kept PER USER before being
 // auto-deleted. This history is only for manual review -- NOT the AI
-// context source anymore (that's companion_memory's job) -- so it's
-// safe to keep bounded. This is what prevents the `history` table from
-// growing forever and choking hosting disk space.
+// context source (that's companion_memory's job) -- so it's safe to
+// keep bounded.
 export const HISTORY_RETAIN_COUNT =
   parseInt(process.env.HISTORY_RETAIN_COUNT, 10) || 30;
 
@@ -45,14 +42,14 @@ export const MAX_OUTPUT_CHARS =
 
 // ==================== AI PROVIDER (universal, OpenAI-compatible) ====================
 //
-// Semua provider di bawah ini kompatibel dengan format "OpenAI Chat
-// Completions" -- cukup ubah 3 baris .env (AI_ENDPOINT, AI_API_KEY,
-// AI_MODELS) tanpa menyentuh file .js sama sekali:
+// All providers below are compatible with the "OpenAI Chat Completions"
+// format -- just change 3 lines in .env (AI_ENDPOINT, AI_API_KEY,
+// AI_MODELS) without touching any .js files:
 //
 //   NVIDIA Nemotron:
 //     AI_ENDPOINT=https://integrate.api.nvidia.com/v1/chat/completions
 //     AI_API_KEY=nvapi-xxxx
-//     AI_MODELS=nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3-nano-30b-a3b
+//     AI_MODELS=nvidia/nemotron-3-ultra-550b-a55b,...
 //
 //   OpenAI:
 //     AI_ENDPOINT=https://api.openai.com/v1/chat/completions
@@ -74,34 +71,34 @@ export const MAX_OUTPUT_CHARS =
 //     AI_API_KEY=sk-or-v1-xxxx
 //     AI_MODELS=anthropic/claude-3.5-sonnet,google/gemini-2.5-flash
 //
-//   Gemini (lewat endpoint OpenAI-compat):
+//   Gemini (via OpenAI-compatible endpoint):
 //     AI_ENDPOINT=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
 //     AI_API_KEY=AIzaSy...
 //     AI_MODELS=gemini-2.5-flash,gemini-2.5-flash-lite
 
-// Endpoint -- kalau kosong, fallback ke NVIDIA agar bot tetap nyala.
+// Endpoint -- if empty, falls back to NVIDIA so the bot still starts.
 export const AI_ENDPOINT =
   process.env.AI_ENDPOINT ||
   "https://integrate.api.nvidia.com/v1/chat/completions";
 
-// API key. Prioritas: AI_API_KEY → GEMINI_API_KEY (kompatibel .env lama).
+// API key. Priority: AI_API_KEY -> GEMINI_API_KEY (legacy .env compat).
 export const AI_API_KEY =
   process.env.AI_API_KEY || process.env.GEMINI_API_KEY;
 
-// Daftar model, dipisah koma, dicoba dari kiri ke kanan.
-// Prioritas: AI_MODELS → GEMINI_MODELS → GEMINI_MODEL (legacy).
+// Model list, comma-separated, tried left to right.
+// Priority: AI_MODELS -> GEMINI_MODELS -> GEMINI_MODEL (legacy).
 export const AI_MODELS = (
   process.env.AI_MODELS ||
   process.env.GEMINI_MODELS ||
   process.env.GEMINI_MODEL ||
-  "nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3-nano-30b-a3b"
+  "nvidia/nemotron-3-ultra-550b-a55b,nvidia/nemotron-nano-9b-v2"
 )
   .split(",")
   .map((m) => m.trim())
   .filter(Boolean);
 
-// Retry PER MODEL, hanya untuk error transient (network / 5xx).
-// 429 tidak di-retry di model yang sama (langsung fallback).
+// Retry PER MODEL, only for transient errors (network / 5xx).
+// 429 is NOT retried on the same model (immediate fallback).
 export const AI_MAX_RETRIES =
   parseInt(process.env.AI_MAX_RETRIES, 10) ||
   parseInt(process.env.GEMINI_MAX_RETRIES, 10) ||
@@ -112,23 +109,22 @@ export const AI_RETRY_DELAY =
   parseInt(process.env.GEMINI_RETRY_DELAY, 10) ||
   2000;
 
-// Batas keras jumlah request aktual untuk SATU callGemini(),
-// dihitung di semua model + retry. Ini rem utama: berapa pun
-// panjang AI_MODELS, total request per pesan user dibatasi ini.
+// Hard cap on actual requests for ONE callGemini() call, counted
+// across all models + retries. This is the main brake: no matter how
+// long AI_MODELS is, total requests per user message is capped here.
 export const AI_MAX_TOTAL_ATTEMPTS =
   parseInt(process.env.AI_MAX_TOTAL_ATTEMPTS, 10) ||
   parseInt(process.env.GEMINI_MAX_TOTAL_ATTEMPTS, 10) ||
   6;
 
-// Setelah 429, model "diistirahatkan" selama ini (ms) dan tidak
-// dipakai lagi (bahkan dari user lain) sampai cooldown habis.
+// After a 429, the model is "rested" for this duration (ms) and won't
+// be used again (even by other users) until the cooldown expires.
 export const AI_MODEL_COOLDOWN_MS =
   parseInt(process.env.AI_MODEL_COOLDOWN_MS, 10) ||
   parseInt(process.env.GEMINI_MODEL_COOLDOWN_MS, 10) ||
   60000;
 
-// ---- Alias kompatibilitas: agar gemini.js & file lama tetap jalan ----
-// Semua nama GEMINI_* sekarang menunjuk ke nilai AI_* di atas.
+// ---- Compatibility aliases: so gemini.js & old files still work ----
 export const GEMINI_API_KEY            = AI_API_KEY;
 export const GEMINI_MODELS             = AI_MODELS;
 export const GEMINI_MAX_RETRIES        = AI_MAX_RETRIES;
@@ -137,27 +133,67 @@ export const GEMINI_MAX_TOTAL_ATTEMPTS = AI_MAX_TOTAL_ATTEMPTS;
 export const GEMINI_MODEL_COOLDOWN_MS  = AI_MODEL_COOLDOWN_MS;
 
 // ==================== COMPANION MEMORY (rolling summary) ====================
-// Replaces the old "resend N raw history messages on every request"
-// approach. Now it only sends: system persona + short summary + key
-// facts + ONE last turn (for conversational flow) + the new prompt.
-// The summary is updated by the AI itself every SUMMARY_EVERY_N_TURNS
-// turns, so token cost stays roughly constant even after hundreds of messages.
+// Only sends: system persona + short summary + key facts + ONE last
+// turn + the new prompt. The summary is updated by the AI itself every
+// SUMMARY_EVERY_N_TURNS turns, so token cost stays roughly constant.
 
 export const SUMMARY_EVERY_N_TURNS =
   parseInt(process.env.SUMMARY_EVERY_N_TURNS, 10) || 6;
 
 export const MAX_FACTS = parseInt(process.env.MAX_FACTS, 10) || 8;
 
+// Legacy affection system (kept for backward compatibility).
+// The new relationship system uses REL_XP_BASE below instead.
 export const AFFECTION_PER_TURN =
   parseInt(process.env.AFFECTION_PER_TURN, 10) || 1;
 
-// ==================== PASSIVE LEARNING (the bot gets to know each member) ====================
+// ==================== RELATIONSHIP XP / LEVEL ====================
+// Sistem ini mengatur seberapa cepat user bisa membangun kedekatan dengan bot.
+// Semakin tinggi angkanya, semakin cepat user naik level.
+
+// XP dasar yang didapat user untuk setiap pesan bermakna (command mchan).
+// Pesan harus: >12 karakter, tidak spam, tidak diulang dalam 30 menit.
+// Contoh: REL_XP_BASE=4 → user dapat 4 XP per pesan normal
+export const REL_XP_BASE =
+  parseInt(process.env.REL_XP_BASE, 10) || 4;
+
+// Batas maksimal XP yang bisa didapat user dalam 1 hari (reset setiap tengah malam).
+// Mencegah user "speedrun" level dengan spam chat seharian.
+// Contoh: REL_XP_DAILY_CAP=60 → setelah dapat 60 XP, pesan berikutnya tidak dapat XP lagi sampai besok
+export const REL_XP_DAILY_CAP =
+  parseInt(process.env.REL_XP_DAILY_CAP, 10) || 60;
+
+// Level tertinggi yang bisa dicapai user. Setelah level ini, XP tetap naik tapi tidak ada level lagi.
+// Contoh: REL_MAX_LEVEL=30 → user bisa mencapai level 1-30
+export const REL_MAX_LEVEL =
+  parseInt(process.env.REL_MAX_LEVEL, 10) || 30;
+
+// XP yang didapat dari chat biasa (tanpa command mchan) melalui passive learning.
+// Bot diam-diam belajar dari chat user dan memberi XP kecil.
+// Contoh: REL_PASSIVE_XP=1 → user dapat 1 XP dari chat biasa
+export const REL_PASSIVE_XP =
+  parseInt(process.env.REL_PASSIVE_XP, 10) || 1;
+
+// Jeda waktu minimal (dalam detik) antar pesan agar user bisa dapat XP.
+// Mencegah spam: jika user kirim pesan terlalu cepat, tidak dapat XP.
+// Contoh: REL_MIN_GAP_SECONDS=90 → user harus tunggu 90 detik antar pesan
+export const REL_MIN_GAP_SECONDS =
+  parseInt(process.env.REL_MIN_GAP_SECONDS, 10) || 90;
+
+// Koefisien kurva XP. Menentukan seberapa curam kenaikan XP yang dibutuhkan untuk naik level.
+// Rumus: XP yang dibutuhkan = REL_XP_CURVE × (Level - 1)²
+// Semakin tinggi angkanya, semakin sulit naik level tinggi.
+// Contoh: REL_XP_CURVE=100 → Level 2 butuh 100 XP, Level 3 butuh 400 XP, Level 10 butuh 8,100 XP
+export const REL_XP_CURVE =
+  parseInt(process.env.REL_XP_CURVE, 10) || 100;
+
+// ==================== PASSIVE LEARNING ====================
 // The bot quietly "listens" to ordinary chat (NOT commands) across
-// every channel it can access, and once PASSIVE_LEARN_BATCH_SIZE
-// messages have accumulated from one user, summarizes them once into
-// an update to the summary/facts in the SAME companion_memory used by
-// the `mokachan` command -- so the profile stays unified. This never
-// triggers a reply, it just learns quietly in the background.
+// every channel it can access. Once PASSIVE_LEARN_BATCH_SIZE messages
+// accumulate from one user, it summarizes them into the SAME
+// companion_memory used by the AI command -- so profiles stay unified.
+// This never triggers a reply, it just learns quietly in the background.
+
 export const PASSIVE_LEARN_BATCH_SIZE =
   parseInt(process.env.PASSIVE_LEARN_BATCH_SIZE, 10) || 12;
 
@@ -165,15 +201,10 @@ export const PASSIVE_LEARN_MIN_LENGTH =
   parseInt(process.env.PASSIVE_LEARN_MIN_LENGTH, 10) || 4;
 
 // ==================== REAL-TIME CHANNEL CONTEXT ====================
-// This is what lets the AI understand topics involving OTHER members
-// talking to each other, not just the long-term profile of whoever is
-// invoking the command. Companion memory (above) is slow-updating,
-// per-user, and built from summarization -- it has no visibility into
-// what's happening in the channel RIGHT NOW. This fetches the actual
-// recent messages in the channel fresh on every `mokachan` call
-// (never stored, purely ephemeral) so the AI can follow an ongoing
-// conversation between other people and answer questions about it
-// naturally, the same way a person reading the channel would.
+// Fetches the actual recent messages in the channel fresh on every
+// AI command call (never stored, purely ephemeral) so the AI can
+// follow an ongoing conversation between other people naturally.
+
 export const RECENT_CONTEXT_MESSAGE_COUNT =
   parseInt(process.env.RECENT_CONTEXT_MESSAGE_COUNT, 10) || 8;
 
@@ -183,9 +214,7 @@ export const RECENT_CONTEXT_TRIM_CHARS =
 // ==================== ANIME CHARACTER CLAIM (Rimi-chan-style spawn) ====================
 // While a server has chat activity, a random character from AniList
 // automatically appears every CHARACTER_SPAWN_INTERVAL_MS (default 20
-// minutes), and WHOEVER types the claim command first gets it. If
-// nobody claims it within CHARACTER_SPAWN_TIMEOUT_MS, the spawn
-// expires and a new one can appear after the next interval.
+// minutes), and whoever types the claim command first gets it.
 
 export const CHARACTER_SPAWN_INTERVAL_MS =
   parseInt(process.env.CHARACTER_SPAWN_INTERVAL_MS, 10) || 20 * 60 * 1000;
@@ -193,9 +222,9 @@ export const CHARACTER_SPAWN_INTERVAL_MS =
 export const CHARACTER_SPAWN_TIMEOUT_MS =
   parseInt(process.env.CHARACTER_SPAWN_TIMEOUT_MS, 10) || 10 * 60 * 1000;
 
-// Default channel where characters appear (optional, can be set in
-// .env). If empty, an admin MUST set it via `msetspawnchannel` first
-// before automatic spawning activates -- so it doesn't spread to every channel.
+// Default channel where characters appear (optional). If empty, an
+// admin MUST set it via `msetspawnchannel` first before automatic
+// spawning activates.
 export const DEFAULT_SPAWN_CHANNEL_ID =
   process.env.CHARACTER_SPAWN_CHANNEL_ID || null;
 
@@ -218,6 +247,7 @@ export const COMMANDS = {
   admincard: process.env.CMD_ADMINCARD || "admincard",
 };
 
+// ==================== WEB SEARCH ====================
 export const TAVILY_API_KEY = process.env.TAVILY_API_KEY || "";
 
 // ==================== VALIDATION ====================
@@ -230,8 +260,8 @@ export function validateConfig() {
 
   if (!AI_API_KEY) {
     console.error(
-      "AI_API_KEY (atau GEMINI_API_KEY) is not set. " +
-        "Isi salah satunya di .env."
+      "AI_API_KEY (or GEMINI_API_KEY) is not set. " +
+        "Set one of them in .env."
     );
     process.exit(1);
   }
@@ -242,7 +272,7 @@ export function validateConfig() {
   }
 
   if (!AI_MODELS.length) {
-    console.error("AI_MODELS (atau GEMINI_MODELS) kosong / tidak valid.");
+    console.error("AI_MODELS (or GEMINI_MODELS) is empty or invalid.");
     process.exit(1);
   }
 }

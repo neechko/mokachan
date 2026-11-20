@@ -5,22 +5,29 @@ const DATABASE_URL = process.env.DATABASE_URL;
 
 if (!DATABASE_URL) {
   throw new Error(
-    "DATABASE_URL belum diset di .env. Isi dengan connection string Neon PostgreSQL."
+    "DATABASE_URL is not set in .env. Add your Neon PostgreSQL connection string."
   );
 }
 
-// Neon pooler/transaction mode lebih aman dengan prepare: false.
+// Neon pooler/transaction mode is safer with prepare: false.
 const sql = postgres(DATABASE_URL, {
   max: 5,
   idle_timeout: 20,
   connect_timeout: 10,
   prepare: false,
   ssl: "require",
+
+  // Hide harmless PostgreSQL NOTICE messages unless DEBUG_MODE=true.
+  onnotice: (notice) => {
+    if (process.env.DEBUG_MODE === "true") {
+      console.log("[PG NOTICE]", notice.message);
+    }
+  },
 });
 
-// SQLite lama menyimpan timestamp sebagai TEXT ISO.
-// PostgreSQL mengembalikan Date object, jadi kita.normalkan ke ISO string
-// agar kode lama yang membaca created_at/updated_at tetap kompatibel.
+// Old SQLite stored timestamps as ISO TEXT.
+// PostgreSQL returns Date objects, so normalize them to ISO strings
+// for compatibility with older code.
 function iso(value) {
   if (!value) return null;
   return new Date(value).toISOString();
@@ -32,9 +39,9 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-// anilist_id di SQLite lama bisa angka, tapi ada juga custom string
-// seperti "wanderer" / "raiden-shogun". Neon menyimpannya sebagai TEXT.
-// Untuk kompatibilitas, angka tetap dikembalikan sebagai number.
+// Old SQLite anilist_id could be numeric, but also custom strings
+// like "wanderer" / "raiden-shogun". Neon stores it as TEXT.
+// For compatibility, numeric strings are returned as numbers.
 function normalizeAnilistId(value) {
   if (value === null || value === undefined) return null;
   const str = String(value);
@@ -81,6 +88,16 @@ export async function initDB() {
       user_id TEXT PRIMARY KEY,
       nickname TEXT DEFAULT '',
       affection INTEGER DEFAULT 0,
+
+      relationship_xp INTEGER NOT NULL DEFAULT 0,
+      trust INTEGER NOT NULL DEFAULT 0,
+      comfort INTEGER NOT NULL DEFAULT 0,
+      familiarity INTEGER NOT NULL DEFAULT 0,
+      interaction_count INTEGER NOT NULL DEFAULT 0,
+      last_interaction_at TIMESTAMPTZ,
+      xp_day INTEGER NOT NULL DEFAULT 0,
+      xp_day_date TEXT NOT NULL DEFAULT '',
+
       summary TEXT DEFAULT '',
       facts TEXT DEFAULT '[]',
       last_prompt TEXT DEFAULT '',
@@ -142,13 +159,54 @@ export async function initDB() {
     ON passive_chat_buffer (user_id, id ASC)
   `;
 
-  // Kompatibilitas dengan data lama:
-  // - anilist_id pernah INTEGER, tapi ada custom ID string.
-  // - bot_settings.value di SQLite bisa null.
+  // Legacy compatibility:
+  // - anilist_id used to be INTEGER, but custom string IDs exist.
+  // - bot_settings.value could be null in SQLite.
   await sql`ALTER TABLE character_claims ALTER COLUMN anilist_id TYPE TEXT`;
   await sql`ALTER TABLE character_claims ALTER COLUMN anilist_id DROP NOT NULL`;
   await sql`ALTER TABLE channel_spawn ALTER COLUMN anilist_id TYPE TEXT`;
   await sql`ALTER TABLE bot_settings ALTER COLUMN value DROP NOT NULL`;
+
+  // Relationship XP columns for existing databases.
+  await sql`
+    ALTER TABLE companion_memory
+    ADD COLUMN IF NOT EXISTS relationship_xp INTEGER NOT NULL DEFAULT 0
+  `;
+
+  await sql`
+    ALTER TABLE companion_memory
+    ADD COLUMN IF NOT EXISTS trust INTEGER NOT NULL DEFAULT 0
+  `;
+
+  await sql`
+    ALTER TABLE companion_memory
+    ADD COLUMN IF NOT EXISTS comfort INTEGER NOT NULL DEFAULT 0
+  `;
+
+  await sql`
+    ALTER TABLE companion_memory
+    ADD COLUMN IF NOT EXISTS familiarity INTEGER NOT NULL DEFAULT 0
+  `;
+
+  await sql`
+    ALTER TABLE companion_memory
+    ADD COLUMN IF NOT EXISTS interaction_count INTEGER NOT NULL DEFAULT 0
+  `;
+
+  await sql`
+    ALTER TABLE companion_memory
+    ADD COLUMN IF NOT EXISTS last_interaction_at TIMESTAMPTZ
+  `;
+
+  await sql`
+    ALTER TABLE companion_memory
+    ADD COLUMN IF NOT EXISTS xp_day INTEGER NOT NULL DEFAULT 0
+  `;
+
+  await sql`
+    ALTER TABLE companion_memory
+    ADD COLUMN IF NOT EXISTS xp_day_date TEXT NOT NULL DEFAULT ''
+  `;
 
   return sql;
 }
@@ -217,7 +275,7 @@ export async function saveHistory(userId, prompt, result, model) {
     VALUES (${userId}, ${prompt}, ${result}, ${new Date()}, ${model})
   `;
 
-  // AUTO-TRIM per user, sama seperti SQLite lama.
+  // Auto-trim per user, same behavior as the old SQLite version.
   await sql`
     DELETE FROM history
     WHERE user_id = ${userId}
@@ -254,6 +312,16 @@ export async function clearHistory(userId) {
 const DEFAULT_COMPANION = {
   nickname: "",
   affection: 0,
+
+  relationship_xp: 0,
+  trust: 0,
+  comfort: 0,
+  familiarity: 0,
+  interaction_count: 0,
+  last_interaction_at: null,
+  xp_day: 0,
+  xp_day_date: "",
+
   summary: "",
   facts: "[]",
   last_prompt: "",
@@ -270,18 +338,42 @@ export async function getOrCreateCompanion(userId) {
     return {
       ...rows[0],
       updated_at: iso(rows[0].updated_at),
+      last_interaction_at: iso(rows[0].last_interaction_at),
     };
   }
 
   await sql`
     INSERT INTO companion_memory (
-      user_id, nickname, affection, summary, facts,
-      last_prompt, last_response, turns_since_summary, updated_at
+      user_id,
+      nickname,
+      affection,
+      relationship_xp,
+      trust,
+      comfort,
+      familiarity,
+      interaction_count,
+      last_interaction_at,
+      xp_day,
+      xp_day_date,
+      summary,
+      facts,
+      last_prompt,
+      last_response,
+      turns_since_summary,
+      updated_at
     )
     VALUES (
       ${userId},
       ${DEFAULT_COMPANION.nickname},
       ${DEFAULT_COMPANION.affection},
+      ${DEFAULT_COMPANION.relationship_xp},
+      ${DEFAULT_COMPANION.trust},
+      ${DEFAULT_COMPANION.comfort},
+      ${DEFAULT_COMPANION.familiarity},
+      ${DEFAULT_COMPANION.interaction_count},
+      ${DEFAULT_COMPANION.last_interaction_at},
+      ${DEFAULT_COMPANION.xp_day},
+      ${DEFAULT_COMPANION.xp_day_date},
       ${DEFAULT_COMPANION.summary},
       ${DEFAULT_COMPANION.facts},
       ${DEFAULT_COMPANION.last_prompt},
@@ -302,6 +394,14 @@ export async function saveCompanion(userId, patch) {
     UPDATE companion_memory SET
       nickname = ${merged.nickname},
       affection = ${merged.affection},
+      relationship_xp = ${merged.relationship_xp},
+      trust = ${merged.trust},
+      comfort = ${merged.comfort},
+      familiarity = ${merged.familiarity},
+      interaction_count = ${merged.interaction_count},
+      last_interaction_at = ${merged.last_interaction_at},
+      xp_day = ${merged.xp_day},
+      xp_day_date = ${merged.xp_day_date},
       summary = ${merged.summary},
       facts = ${merged.facts},
       last_prompt = ${merged.last_prompt},
@@ -318,7 +418,16 @@ export async function resetCompanion(userId) {
 
 export async function getCompanionPublicInfo(userId) {
   const rows = await sql`
-    SELECT user_id, nickname, affection, summary, facts
+    SELECT
+      user_id,
+      nickname,
+      affection,
+      relationship_xp,
+      trust,
+      comfort,
+      familiarity,
+      summary,
+      facts
     FROM companion_memory
     WHERE user_id = ${userId}
   `;
@@ -514,8 +623,8 @@ export async function clearPassiveBuffer(userId, uptoId = null) {
 }
 
 // ==================== VACUUM / STORAGE COMPATIBILITY ====================
-// PostgreSQL/Neon tidak memakai SQLite VACUUM/incremental vacuum.
-// Fungsi-fungsi ini tetap diekspor agar command lama tidak error.
+// PostgreSQL/Neon does not use SQLite VACUUM/incremental vacuum.
+// These functions remain exported so older commands do not crash.
 
 export async function vacuumDatabase({ force = false } = {}) {
   try {
@@ -526,8 +635,8 @@ export async function vacuumDatabase({ force = false } = {}) {
       forced: force,
     };
   } catch (error) {
-    // Beberapa managed Postgres membatasi VACUUM manual.
-    // Autovacuum tetap berjalan di sisi provider.
+    // Some managed Postgres providers restrict manual VACUUM.
+    // Autovacuum still runs on the provider side.
     return {
       ok: false,
       skipped: true,
@@ -542,7 +651,7 @@ export async function convertToIncrementalVacuum() {
     converted: false,
     alreadyIncremental: true,
     engine: "postgres",
-    note: "Neon/PostgreSQL memakai autovacuum, bukan SQLite incremental vacuum.",
+    note: "Neon/PostgreSQL uses autovacuum, not SQLite incremental vacuum.",
   };
 }
 
@@ -621,7 +730,7 @@ export async function getDatabaseSizeBytes() {
   return Number(rows[0]?.bytes ?? 0);
 }
 
-// Opsional: untuk graceful shutdown di index.js
+// Optional: for graceful shutdown in index.js
 export async function closeDB() {
   await sql.end();
 }
