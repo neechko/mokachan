@@ -245,6 +245,7 @@ export const COMMANDS = {
   diskusage: process.env.CMD_DISKUSAGE || "diskusage",
   setSpawnChannel: process.env.CMD_SETSPAWNCHANNEL || "setspawnchannel",
   admincard: process.env.CMD_ADMINCARD || "admincard",
+  setNickname: process.env.CMD_SETNICKNAME || "setnickname", 
 };
 
 // ==================== WEB SEARCH ====================

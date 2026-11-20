@@ -18,9 +18,10 @@ export async function handleHelpCommand(msg) {
       `**${PREFIX}${COMMANDS.koleksi}** - View your character collection\n` +
       `**${PREFIX}${COMMANDS.setSpawnChannel}** - (admin) set the official character spawn channel\n` +
       `**${PREFIX}${COMMANDS.diskusage}** - Show disk usage breakdown\n` +
-      `**${PREFIX}${COMMANDS.vacuumconvert}** - (admin) one-time database vacuum conversion\n` +
       `**${PREFIX}${COMMANDS.ping}** - Check latency\n` +
-      `**${PREFIX}${COMMANDS.help}** - Show commands`
+      `**${PREFIX}${COMMANDS.help}** - Show commands\n` +
+      `**${PREFIX}${COMMANDS.setNickname}** - Set your nickname\n` +
+      `**${PREFIX}${COMMANDS.setNickname} clear/reset** - Remove your nickname`
     )
     .setFooter({ text: `${BOT_NAME}` })
     .setTimestamp();

@@ -32,6 +32,7 @@ import { maybeSpawnCharacter } from "./src/characterSpawn.js";
 import { recordPassiveMessage } from "./src/passiveLearning.js";
 import { handleDiskUsageCommand } from "./src/commands/diskUsage.js";
 import { runMaintenance } from "./src/maintenance.js";
+import { handleSetNicknameCommand } from "./src/commands/setNickname.js";
 
 validateConfig();
 
@@ -270,6 +271,14 @@ client.on("messageCreate", async (msg) => {
       await handleProfilCommand(msg);
       return;
     }
+
+       // ---- setnickname ----
+   const setNicknameCommand = `${PREFIX}${COMMANDS.setNickname}`;
+   if (commandMatches(content, setNicknameCommand)) {
+     const rawArgs = content.slice(setNicknameCommand.length).trim();
+     await handleSetNicknameCommand(msg, rawArgs);
+     return;
+   }
 
     // ---- resetcompanion ----
     const resetCompanionCommand = `${PREFIX}${COMMANDS.resetcompanion}`;

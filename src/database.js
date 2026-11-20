@@ -11,9 +11,9 @@ if (!DATABASE_URL) {
 
 // Neon pooler/transaction mode is safer with prepare: false.
 const sql = postgres(DATABASE_URL, {
-  max: 5,
+  max: 1,
   idle_timeout: 20,
-  connect_timeout: 10,
+  connect_timeout: 30,
   prepare: false,
   ssl: "require",
 
