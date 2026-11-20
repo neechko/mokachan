@@ -1,4 +1,3 @@
-```markdown
 <p align="center">
   <img src="assets/moka-chan.webp" alt="Mokachan" width="360">
 </p>
